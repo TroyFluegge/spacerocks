@@ -2,8 +2,8 @@
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const CANVAS_W = 800;
-const CANVAS_H = 600;
+let CANVAS_W = window.innerWidth;
+let CANVAS_H = window.innerHeight;
 
 const ROTATION_SPEED = 2.5;   // rad/s
 const THRUST         = 220;   // px/s²
@@ -46,6 +46,13 @@ const DEBRIS_SHAPES = [
 
 const canvas = document.getElementById('gameCanvas');
 const ctx    = canvas.getContext('2d');
+
+function resizeCanvas() {
+    CANVAS_W = canvas.width  = window.innerWidth;
+    CANVAS_H = canvas.height = window.innerHeight;
+    generateStars();
+}
+window.addEventListener('resize', resizeCanvas);
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -1509,7 +1516,7 @@ function gameLoop(timestamp) {
 
 function init() {
     hiScore = parseInt(localStorage.getItem('spaceRocksHiScore') || '0', 10);
-    generateStars();
+    resizeCanvas();
     state   = 'menu';
     score   = 0;
     lives   = 3;
