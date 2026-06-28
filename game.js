@@ -44,6 +44,9 @@ const SPACEMAN_FIRE_RATE  = 0.5;  // seconds between auto-shots (spaceman)
 const ISS_FIRE_RATE       = 0.28; // seconds between auto-shots (ISS)
 const FRIENDLY_SPAWN_BASE = 28;   // seconds between friendly spawns
 
+const MAX_LEADERBOARD = 10;
+const MAX_NAME_LENGTH = 12;
+
 // Unit-scale polygon vertices for three irregular rock shapes
 const DEBRIS_SHAPES = [
     [[ 0,-1],[0.5,-0.7],[0.9,-0.3],[0.85,0.4],[0.3,0.9],[-0.5,0.8],[-0.9,0.2],[-0.6,-0.6]],
@@ -71,6 +74,19 @@ window.addEventListener('keydown', e => {
     const blocked = ['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
     if (blocked.includes(e.code)) e.preventDefault();
     ensureAudio();
+
+    // Name entry input — handle character capture
+    if (state === 'name_entry') {
+        if (e.key === 'Enter') {
+            submitScore(nameEntryText.trim() || 'PILOT');
+            state = 'menu';
+        } else if (e.key === 'Backspace') {
+            nameEntryText = nameEntryText.slice(0, -1);
+        } else if (e.key.length === 1 && nameEntryText.length < MAX_NAME_LENGTH) {
+            nameEntryText += e.key.toUpperCase();
+        }
+        e.preventDefault();
+    }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -398,11 +414,13 @@ function getLevelConfig(level) {
 
 // ── Game State ───────────────────────────────────────────────────────────────
 
-let state;          // 'menu' | 'playing' | 'game_over'
+let state;          // 'menu' | 'playing' | 'game_over' | 'name_entry'
 let score;
 let lives;
 let level;
-let hiScore;
+let leaderboard;    // [{name, score}, ...] top 10, sorted desc
+let nameEntryText;  // string being typed on name entry screen
+let nameEntryRank;  // 1-based rank of the just-earned score
 
 let ship;
 let bullets;
@@ -658,9 +676,10 @@ function startGame() {
 // ── Update ───────────────────────────────────────────────────────────────────
 
 function update(dt) {
-    if (state === 'menu')      updateMenu(dt);
+    if (state === 'menu')           updateMenu(dt);
     else if (state === 'playing')   updatePlaying(dt);
     else if (state === 'game_over') updateGameOver(dt);
+    // name_entry state is driven entirely by keydown events
 }
 
 function updateMenu() {
@@ -1145,13 +1164,17 @@ function checkCollisions() {
             playShipHit();
 
             if (lives <= 0) {
-                if (score > hiScore) {
-                    hiScore = score;
-                    localStorage.setItem('spaceRocksHiScore', hiScore);
-                }
                 playGameOver();
-                state = 'game_over';
-                gameOverLockout = 2.0;
+                if (qualifiesForLeaderboard(score)) {
+                    // Find what rank this score will be
+                    nameEntryRank = leaderboard.findIndex(e => score > e.score) + 1;
+                    if (nameEntryRank === 0) nameEntryRank = leaderboard.length + 1;
+                    nameEntryText = '';
+                    state = 'name_entry';
+                } else {
+                    state = 'game_over';
+                    gameOverLockout = 2.0;
+                }
                 return;
             }
 
@@ -1250,6 +1273,40 @@ function debrisColor(size) {
     return '#ddccaa';
 }
 
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+
+function loadLeaderboard() {
+    try {
+        const raw = localStorage.getItem('spaceRocksLeaderboard');
+        if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    // Migrate legacy single hi-score if present
+    const legacy = parseInt(localStorage.getItem('spaceRocksHiScore') || '0', 10);
+    if (legacy > 0) return [{ name: 'PILOT', score: legacy }];
+    return [];
+}
+
+function saveLeaderboard() {
+    localStorage.setItem('spaceRocksLeaderboard', JSON.stringify(leaderboard));
+}
+
+function qualifiesForLeaderboard(s) {
+    if (s <= 0) return false;
+    if (leaderboard.length < MAX_LEADERBOARD) return true;
+    return s > leaderboard[leaderboard.length - 1].score;
+}
+
+function submitScore(name) {
+    leaderboard.push({ name: name.slice(0, MAX_NAME_LENGTH).toUpperCase(), score });
+    leaderboard.sort((a, b) => b.score - a.score);
+    if (leaderboard.length > MAX_LEADERBOARD) leaderboard.length = MAX_LEADERBOARD;
+    saveLeaderboard();
+}
+
+function topScore() {
+    return leaderboard.length > 0 ? leaderboard[0].score : 0;
+}
+
 // ── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
@@ -1258,9 +1315,10 @@ function render() {
 
     renderStars();
 
-    if (state === 'menu')           renderMenu();
-    else if (state === 'playing')   renderPlaying();
-    else if (state === 'game_over') renderGameOver();
+    if (state === 'menu')             renderMenu();
+    else if (state === 'playing')     renderPlaying();
+    else if (state === 'game_over')   renderGameOver();
+    else if (state === 'name_entry')  renderNameEntry();
 }
 
 function renderStars() {
@@ -1274,28 +1332,51 @@ function renderMenu() {
     ctx.save();
     ctx.textAlign = 'center';
 
-    ctx.font = 'bold 64px monospace';
+    ctx.font = 'bold 56px monospace';
     ctx.fillStyle = '#ffffff';
     ctx.shadowColor = '#44aaff';
     ctx.shadowBlur = 20;
-    ctx.fillText('SPACE ROCKS', CANVAS_W / 2, 200);
+    ctx.fillText('SPACE ROCKS', CANVAS_W / 2, CANVAS_H * 0.13);
 
     ctx.shadowBlur = 0;
-    ctx.font = '20px monospace';
-    ctx.fillStyle = '#aaaaaa';
-    ctx.fillText('A/D or ← → to rotate', CANVAS_W / 2, 290);
-    ctx.fillText('W/S or ↑ ↓ to thrust', CANVAS_W / 2, 320);
-    ctx.fillText('SPACE to shoot', CANVAS_W / 2, 350);
+    ctx.font = '16px monospace';
+    ctx.fillStyle = '#888888';
+    ctx.fillText('A/D  rotate    W/S  thrust    SPACE  shoot    B  bomb', CANVAS_W / 2, CANVAS_H * 0.13 + 46);
 
-    ctx.font = 'bold 22px monospace';
+    ctx.font = 'bold 20px monospace';
     ctx.fillStyle = '#ffffff';
     const blink = Math.floor(Date.now() / 500) % 2 === 0;
-    if (blink) ctx.fillText('PRESS SPACE TO START', CANVAS_W / 2, 430);
+    if (blink) ctx.fillText('PRESS SPACE TO START', CANVAS_W / 2, CANVAS_H * 0.13 + 90);
 
-    if (hiScore > 0) {
-        ctx.font = '18px monospace';
-        ctx.fillStyle = '#ffcc44';
-        ctx.fillText(`HI-SCORE: ${hiScore}`, CANVAS_W / 2, 490);
+    // Leaderboard table
+    const cx    = CANVAS_W / 2;
+    const top   = CANVAS_H * 0.13 + 136;
+    const rowH  = Math.min(28, (CANVAS_H - top - 40) / (MAX_LEADERBOARD + 1));
+
+    ctx.font      = 'bold 15px monospace';
+    ctx.fillStyle = '#ffcc44';
+    ctx.shadowColor = '#ffcc44';
+    ctx.shadowBlur  = 6;
+    ctx.fillText('HIGH SCORES', cx, top);
+    ctx.shadowBlur = 0;
+
+    if (leaderboard.length === 0) {
+        ctx.font      = '14px monospace';
+        ctx.fillStyle = '#555555';
+        ctx.fillText('— no scores yet —', cx, top + rowH * 1.5);
+    } else {
+        ctx.font = '14px monospace';
+        leaderboard.forEach((entry, i) => {
+            const y     = top + (i + 1) * rowH + 4;
+            const medal = i === 0 ? '#ffd700' : i === 1 ? '#c0c0c0' : i === 2 ? '#cd7f32' : '#888888';
+            ctx.fillStyle = medal;
+            ctx.textAlign = 'right';
+            ctx.fillText(`${i + 1}.`, cx - 130, y);
+            ctx.textAlign = 'left';
+            ctx.fillText(entry.name.padEnd(MAX_NAME_LENGTH), cx - 120, y);
+            ctx.textAlign = 'right';
+            ctx.fillText(entry.score.toLocaleString(), cx + 130, y);
+        });
     }
 
     ctx.restore();
@@ -1690,11 +1771,12 @@ function renderHUD() {
     ctx.fillStyle = '#aaaaaa';
     ctx.fillText(`LVL ${level}`, 16, 56);
 
-    if (hiScore > 0) {
+    const best = topScore();
+    if (best > 0) {
         ctx.textAlign = 'center';
         ctx.fillStyle = '#ffcc44';
         ctx.font      = '14px monospace';
-        ctx.fillText(`BEST: ${hiScore}`, CANVAS_W / 2, 22);
+        ctx.fillText(`BEST: ${best.toLocaleString()}`, CANVAS_W / 2, 22);
     }
 
     // Lives as small ship icons (top-right)
@@ -1813,14 +1895,11 @@ function renderGameOver() {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(`SCORE: ${score}`, CANVAS_W / 2, 300);
 
-    if (score >= hiScore && score > 0) {
-        ctx.font      = '20px monospace';
-        ctx.fillStyle = '#ffcc44';
-        ctx.fillText('NEW HIGH SCORE!', CANVAS_W / 2, 340);
-    } else if (hiScore > 0) {
+    const best = topScore();
+    if (best > 0) {
         ctx.font      = '18px monospace';
         ctx.fillStyle = '#ffcc44';
-        ctx.fillText(`BEST: ${hiScore}`, CANVAS_W / 2, 340);
+        ctx.fillText(`BEST: ${best.toLocaleString()}`, CANVAS_W / 2, 340);
     }
 
     ctx.font      = '18px monospace';
@@ -1828,6 +1907,64 @@ function renderGameOver() {
     if (gameOverLockout <= 0) {
         const blink = Math.floor(Date.now() / 500) % 2 === 0;
         if (blink) ctx.fillText('PRESS SPACE TO PLAY AGAIN', CANVAS_W / 2, 420);
+    }
+
+    ctx.restore();
+}
+
+function renderNameEntry() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    const cx = CANVAS_W / 2;
+    const cy = CANVAS_H / 2;
+
+    // Background panel
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(cx - 260, cy - 160, 520, 320);
+    ctx.strokeStyle = '#ffcc44';
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(cx - 260, cy - 160, 520, 320);
+
+    ctx.font      = 'bold 28px monospace';
+    ctx.fillStyle = '#ffcc44';
+    ctx.shadowColor = '#ffcc44';
+    ctx.shadowBlur  = 12;
+    ctx.fillText('NEW HIGH SCORE!', cx, cy - 112);
+    ctx.shadowBlur = 0;
+
+    ctx.font      = '20px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`RANK #${nameEntryRank}   SCORE: ${score.toLocaleString()}`, cx, cy - 76);
+
+    ctx.font      = '16px monospace';
+    ctx.fillStyle = '#aaaaaa';
+    ctx.fillText('ENTER YOUR NAME', cx, cy - 40);
+
+    // Name input box
+    const boxW = 300, boxH = 44;
+    ctx.strokeStyle = '#44aaff';
+    ctx.lineWidth   = 2;
+    ctx.shadowColor = '#44aaff';
+    ctx.shadowBlur  = 8;
+    ctx.strokeRect(cx - boxW / 2, cy - 18, boxW, boxH);
+    ctx.shadowBlur = 0;
+
+    const cursor = Math.floor(Date.now() / 530) % 2 === 0 ? '_' : '';
+    ctx.font      = 'bold 22px monospace';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(nameEntryText + cursor, cx, cy + 14);
+
+    ctx.font      = '14px monospace';
+    ctx.fillStyle = '#666666';
+    ctx.fillText('TYPE NAME  •  ENTER TO CONFIRM', cx, cy + 60);
+
+    // Hint: show current rank context
+    if (leaderboard.length > 0) {
+        const prev = leaderboard[nameEntryRank - 1];
+        if (prev) {
+            ctx.fillStyle = '#555555';
+            ctx.fillText(`displaces  ${prev.name}  (${prev.score.toLocaleString()})`, cx, cy + 84);
+        }
     }
 
     ctx.restore();
@@ -1851,7 +1988,7 @@ function gameLoop(timestamp) {
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 function init() {
-    hiScore = parseInt(localStorage.getItem('spaceRocksHiScore') || '0', 10);
+    leaderboard = loadLeaderboard();
     resizeCanvas();
     state   = 'menu';
     score   = 0;
@@ -1862,10 +1999,16 @@ function init() {
     debris  = [];
     enemies = [];
     powerups = [];
+    friendlies = [];
     floatingTexts = [];
     particleExplosions = [];
     screenFlash  = 0;
     notification = null;
+    assistActive = false;
+    assistSource = null;
+    assistTimer  = 0;
+    assistFireTimer = 0;
+    nameEntryText = '';
     resetWeapon();
     requestAnimationFrame(gameLoop);
 }
