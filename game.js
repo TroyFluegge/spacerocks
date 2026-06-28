@@ -436,6 +436,7 @@ let notification;       // {text, color, timer} for pickup announcements
 let friendlies;
 let friendlySpawnTimer;
 let assistActive;
+let assistSource;
 let assistTimer;
 let assistFireRate;
 let assistFireTimer;
@@ -645,8 +646,9 @@ function startGame() {
     floatingTexts = [];
     screenFlash  = 0;
     notification = null;
-    assistActive = false;
-    assistTimer  = 0;
+    assistActive    = false;
+    assistSource    = null;
+    assistTimer     = 0;
     assistFireTimer = 0;
     resetWeapon();
     startLevel(1);
@@ -912,12 +914,12 @@ function updateFriendlies(dt) {
         f.y += f.vy * dt;
         f.bobTimer += dt;
 
-        // Remove when fully off-screen
-        const margin = (f.type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS) + 80;
-        if (f.x < -margin || f.x > CANVAS_W + margin ||
-            f.y < -margin || f.y > CANVAS_H + margin) {
-            f.active = false;
-        }
+        // Wrap at canvas edges so they stay in play
+        const r = f.type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS;
+        if (f.x < -r)          f.x = CANVAS_W + r;
+        if (f.x > CANVAS_W + r) f.x = -r;
+        if (f.y < -r)          f.y = CANVAS_H + r;
+        if (f.y > CANVAS_H + r) f.y = -r;
     }
     friendlies = friendlies.filter(f => f.active);
 
@@ -932,9 +934,17 @@ function updateFriendlies(dt) {
 function updateAssist(dt) {
     if (!assistActive) return;
 
+    // If the source friendly was shot, end assist early
+    if (!assistSource || !assistSource.active) {
+        assistActive = false;
+        assistSource = null;
+        return;
+    }
+
     assistTimer -= dt;
     if (assistTimer <= 0) {
         assistActive = false;
+        assistSource = null;
         notification = { text: 'AUTO-FIRE ENDED', color: '#88ddff', timer: 2 };
         return;
     }
@@ -944,10 +954,10 @@ function updateAssist(dt) {
         assistFireTimer = assistFireRate;
         const target = findNearestTarget();
         if (target) {
-            const angle = Math.atan2(target.x - ship.x, -(target.y - ship.y));
-            const nx = ship.x + Math.sin(angle) * ship.radius;
-            const ny = ship.y - Math.cos(angle) * ship.radius;
-            const b = createBullet(nx, ny, angle);
+            const sx    = assistSource.x;
+            const sy    = assistSource.y;
+            const angle = Math.atan2(target.x - sx, -(target.y - sy));
+            const b = createBullet(sx, sy, angle);
             b.color = '#00eeff';
             bullets.push(b);
             playLaser();
@@ -1185,15 +1195,13 @@ function checkCollisions() {
     bullets    = bullets.filter(b => b.active);
     friendlies = friendlies.filter(f => f.active);
 
-    // Ship vs Friendlies (activate auto-aim assist on touch)
+    // Ship vs Friendlies — activate assist on touch; friendly stays in play
     for (const f of friendlies) {
         if (!f.active) continue;
-        if (circlesOverlap(ship, f)) {
-            f.active = false;
-            collectFriendly(f.type);
+        if (circlesOverlap(ship, f) && assistTimer <= 0) {
+            collectFriendly(f);
         }
     }
-    friendlies = friendlies.filter(f => f.active);
 }
 
 function collectPowerup(type) {
@@ -1210,15 +1218,16 @@ function collectPowerup(type) {
     }
 }
 
-function collectFriendly(type) {
+function collectFriendly(f) {
     playAssistActivate();
     assistActive    = true;
+    assistSource    = f;
     assistTimer     = ASSIST_DURATION;
-    assistFireRate  = type === 'iss' ? ISS_FIRE_RATE : SPACEMAN_FIRE_RATE;
+    assistFireRate  = f.type === 'iss' ? ISS_FIRE_RATE : SPACEMAN_FIRE_RATE;
     assistFireTimer = 0;
-    const label = type === 'iss' ? 'ISS ESCORT' : 'SPACEMAN RESCUE';
+    const label = f.type === 'iss' ? 'ISS ESCORT' : 'SPACEMAN RESCUE';
     notification = { text: `${label} — AUTO-FIRE ${ASSIST_DURATION}s`, color: '#00eeff', timer: 3 };
-    spawnParticles(ship.x, ship.y, 12, '#00eeff');
+    spawnParticles(f.x, f.y, 12, '#00eeff');
 }
 
 function checkLevelComplete() {
@@ -1342,6 +1351,20 @@ function renderFriendlies() {
     for (const f of friendlies) {
         ctx.save();
         ctx.translate(f.x, f.y);
+
+        // Glow ring when this friendly is the active assist source
+        if (f === assistSource && assistActive) {
+            const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
+            const r = f.type === 'iss' ? ISS_RADIUS + 8 : SPACEMAN_RADIUS + 8;
+            ctx.beginPath();
+            ctx.arc(0, 0, r, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(0,238,255,${0.4 + 0.5 * pulse})`;
+            ctx.lineWidth   = 3;
+            ctx.shadowColor = '#00eeff';
+            ctx.shadowBlur  = 14;
+            ctx.stroke();
+            ctx.shadowBlur  = 0;
+        }
 
         if (f.type === 'spaceman') {
             const bob = Math.sin(f.bobTimer * 1.8) * 2;
