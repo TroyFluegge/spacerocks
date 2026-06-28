@@ -35,6 +35,15 @@ const LASER_DAMAGE_RATE   = 0.15; // seconds between laser hits on a target
 const POWERUP_COLORS = { rapid: '#ffdd00', spread: '#00ccff', laser: '#ff44ff', bomb: '#ff8800' };
 const POWERUP_LABELS = { rapid: 'R', spread: 'S', laser: 'L', bomb: 'B' };
 
+const SPACEMAN_RADIUS     = 16;
+const ISS_RADIUS          = 42;
+const SPACEMAN_PENALTY    = 250;
+const ISS_PENALTY         = 1000;
+const ASSIST_DURATION     = 15;   // seconds auto-fire lasts
+const SPACEMAN_FIRE_RATE  = 0.5;  // seconds between auto-shots (spaceman)
+const ISS_FIRE_RATE       = 0.28; // seconds between auto-shots (ISS)
+const FRIENDLY_SPAWN_BASE = 28;   // seconds between friendly spawns
+
 // Unit-scale polygon vertices for three irregular rock shapes
 const DEBRIS_SHAPES = [
     [[ 0,-1],[0.5,-0.7],[0.9,-0.3],[0.85,0.4],[0.3,0.9],[-0.5,0.8],[-0.9,0.2],[-0.6,-0.6]],
@@ -263,6 +272,38 @@ function playLaserTick() {
     osc.start(t); osc.stop(t + 0.07);
 }
 
+function playFriendlyDestroyed() {
+    if (!audioCtx) return;
+    // Descending alarmed beeps — "oh no!"
+    [880, 660, 440].forEach((freq, i) => {
+        const osc  = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        const t = audioCtx.currentTime + i * 0.13;
+        osc.type = 'square';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.2, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        osc.start(t); osc.stop(t + 0.12);
+    });
+}
+
+function playAssistActivate() {
+    if (!audioCtx) return;
+    // Warm ascending chord — friendly rescue
+    [330, 415, 523, 660].forEach((freq, i) => {
+        const osc  = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        const t = audioCtx.currentTime + i * 0.06;
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.18, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+        osc.start(t); osc.stop(t + 0.26);
+    });
+}
+
 // ── Factory Functions ────────────────────────────────────────────────────────
 
 function createShip() {
@@ -315,6 +356,17 @@ function createEnemy(x, y, vx, vy) {
         active: true,
         pulseTimer: 0,
         spawnAge: 0,   // used for entrance flash effect
+    };
+}
+
+function createFriendly(x, y, vx, vy, type) {
+    return {
+        x, y, vx, vy,
+        radius:   type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS,
+        type,     // 'spaceman' | 'iss'
+        rotation: Math.random() * Math.PI * 2,
+        bobTimer: Math.random() * Math.PI * 2,
+        active:   true,
     };
 }
 
@@ -379,6 +431,14 @@ let laserDamageTimer;   // rate-limits laser hits
 let laserBeam;          // {sx,sy,ex,ey} set each frame while laser fires
 let screenFlash;        // 0-1, used for bomb visual flash
 let notification;       // {text, color, timer} for pickup announcements
+
+// Friendly entity state
+let friendlies;
+let friendlySpawnTimer;
+let assistActive;
+let assistTimer;
+let assistFireRate;
+let assistFireTimer;
 
 // ── Stars ────────────────────────────────────────────────────────────────────
 
@@ -483,6 +543,33 @@ function spawnPowerupFromEdge() {
     spawnPowerupAt(x, y);
 }
 
+function spawnFriendlyFromEdge() {
+    const type  = Math.random() < 0.75 ? 'spaceman' : 'iss';
+    const edge  = Math.floor(Math.random() * 4);
+    const margin = 60;
+    let x, y, vx, vy;
+    const spd = type === 'iss' ? 28 + Math.random() * 18 : 40 + Math.random() * 30;
+
+    if (edge === 0) {
+        x = Math.random() * CANVAS_W; y = -margin;
+        vx = (Math.random() - 0.5) * spd * 0.4; vy = spd * (0.6 + Math.random() * 0.4);
+    } else if (edge === 1) {
+        x = CANVAS_W + margin; y = Math.random() * CANVAS_H;
+        vx = -spd * (0.6 + Math.random() * 0.4); vy = (Math.random() - 0.5) * spd * 0.4;
+    } else if (edge === 2) {
+        x = Math.random() * CANVAS_W; y = CANVAS_H + margin;
+        vx = (Math.random() - 0.5) * spd * 0.4; vy = -spd * (0.6 + Math.random() * 0.4);
+    } else {
+        x = -margin; y = Math.random() * CANVAS_H;
+        vx = spd * (0.6 + Math.random() * 0.4); vy = (Math.random() - 0.5) * spd * 0.4;
+    }
+    friendlies.push(createFriendly(x, y, vx, vy, type));
+}
+
+function friendlySpawnInterval() {
+    return Math.max(18, FRIENDLY_SPAWN_BASE - level * 1.2) + (Math.random() * 8 - 4);
+}
+
 function debrisWeight(d) {
     if (d.size === 'large')  return 1.0;
     if (d.size === 'medium') return 0.5;
@@ -531,12 +618,14 @@ function startLevel(n) {
     powerups = [];
     floatingTexts      = [];
     particleExplosions = [];
-    spawnTimer        = levelCfg.spawnInterval;
-    enemySpawnTimer   = 4;
-    powerupSpawnTimer = 10 + Math.random() * 5;
+    spawnTimer          = levelCfg.spawnInterval;
+    enemySpawnTimer     = 4;
+    powerupSpawnTimer   = 10 + Math.random() * 5;
+    friendlySpawnTimer  = friendlySpawnInterval();
     waveDebrisRemaining = levelCfg.debrisCount * 3;
-    screenFlash       = 0;
-    notification      = null;
+    screenFlash         = 0;
+    notification        = null;
+    friendlies          = [];
 
     for (let i = 0; i < levelCfg.debrisCount; i++) {
         debris.push(spawnDebrisFromEdge(levelCfg.speedMult));
@@ -552,9 +641,13 @@ function startGame() {
     ship   = createShip();
     enemies      = [];
     powerups     = [];
+    friendlies   = [];
     floatingTexts = [];
     screenFlash  = 0;
     notification = null;
+    assistActive = false;
+    assistTimer  = 0;
+    assistFireTimer = 0;
     resetWeapon();
     startLevel(1);
     state  = 'playing';
@@ -594,6 +687,8 @@ function updatePlaying(dt) {
     updateBullets(dt);
     updateDebris(dt);
     updateEnemies(dt);
+    updateFriendlies(dt);
+    updateAssist(dt);
     updateParticles(dt);
     updateFloatingTexts(dt);
     updatePowerups(dt);
@@ -798,6 +893,65 @@ function updatePowerups(dt) {
     if (powerupSpawnTimer <= 0) {
         spawnPowerupFromEdge();
         powerupSpawnTimer = 12 + Math.random() * 8;
+    }
+}
+
+function findNearestTarget() {
+    let nearest = null, bestDist = Infinity;
+    for (const obj of [...debris, ...enemies]) {
+        if (!obj.active) continue;
+        const d = Math.hypot(obj.x - ship.x, obj.y - ship.y);
+        if (d < bestDist) { bestDist = d; nearest = obj; }
+    }
+    return nearest;
+}
+
+function updateFriendlies(dt) {
+    for (const f of friendlies) {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+        f.bobTimer += dt;
+
+        // Remove when fully off-screen
+        const margin = (f.type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS) + 80;
+        if (f.x < -margin || f.x > CANVAS_W + margin ||
+            f.y < -margin || f.y > CANVAS_H + margin) {
+            f.active = false;
+        }
+    }
+    friendlies = friendlies.filter(f => f.active);
+
+    // Spawn timer
+    friendlySpawnTimer -= dt;
+    if (friendlySpawnTimer <= 0) {
+        spawnFriendlyFromEdge();
+        friendlySpawnTimer = friendlySpawnInterval();
+    }
+}
+
+function updateAssist(dt) {
+    if (!assistActive) return;
+
+    assistTimer -= dt;
+    if (assistTimer <= 0) {
+        assistActive = false;
+        notification = { text: 'AUTO-FIRE ENDED', color: '#88ddff', timer: 2 };
+        return;
+    }
+
+    assistFireTimer -= dt;
+    if (assistFireTimer <= 0) {
+        assistFireTimer = assistFireRate;
+        const target = findNearestTarget();
+        if (target) {
+            const angle = Math.atan2(target.x - ship.x, -(target.y - ship.y));
+            const nx = ship.x + Math.sin(angle) * ship.radius;
+            const ny = ship.y - Math.cos(angle) * ship.radius;
+            const b = createBullet(nx, ny, angle);
+            b.color = '#00eeff';
+            bullets.push(b);
+            playLaser();
+        }
     }
 }
 
@@ -1009,6 +1163,37 @@ function checkCollisions() {
         }
     }
     powerups = powerups.filter(p => p.active);
+
+    // Bullets vs Friendlies (penalty + friendly fire alert)
+    for (const b of bullets) {
+        if (!b.active) continue;
+        for (const f of friendlies) {
+            if (!f.active) continue;
+            if (circlesOverlap(b, f)) {
+                b.active = false;
+                f.active = false;
+                const penalty = f.type === 'iss' ? ISS_PENALTY : SPACEMAN_PENALTY;
+                score = Math.max(0, score - penalty);
+                spawnParticles(f.x, f.y, 10, '#ffaaaa');
+                floatingTexts.push({ x: f.x, y: f.y, text: `-${penalty}`, life: 1.2, maxLife: 1.2, active: true });
+                notification = { text: 'FRIENDLY FIRE!', color: '#ff4444', timer: 2.5 };
+                playFriendlyDestroyed();
+                break;
+            }
+        }
+    }
+    bullets    = bullets.filter(b => b.active);
+    friendlies = friendlies.filter(f => f.active);
+
+    // Ship vs Friendlies (activate auto-aim assist on touch)
+    for (const f of friendlies) {
+        if (!f.active) continue;
+        if (circlesOverlap(ship, f)) {
+            f.active = false;
+            collectFriendly(f.type);
+        }
+    }
+    friendlies = friendlies.filter(f => f.active);
 }
 
 function collectPowerup(type) {
@@ -1023,6 +1208,17 @@ function collectPowerup(type) {
         notification = { text: labels[type], color: POWERUP_COLORS[type], timer: 2.5 };
         if (type === 'laser') { laserCharge = 1.0; laserOverheat = 0; }
     }
+}
+
+function collectFriendly(type) {
+    playAssistActivate();
+    assistActive    = true;
+    assistTimer     = ASSIST_DURATION;
+    assistFireRate  = type === 'iss' ? ISS_FIRE_RATE : SPACEMAN_FIRE_RATE;
+    assistFireTimer = 0;
+    const label = type === 'iss' ? 'ISS ESCORT' : 'SPACEMAN RESCUE';
+    notification = { text: `${label} — AUTO-FIRE ${ASSIST_DURATION}s`, color: '#00eeff', timer: 3 };
+    spawnParticles(ship.x, ship.y, 12, '#00eeff');
 }
 
 function checkLevelComplete() {
@@ -1100,6 +1296,7 @@ function renderPlaying() {
     renderParticles();
     renderDebris();
     renderPowerups();
+    renderFriendlies();
     renderEnemies();
     renderLaserBeam();
     renderBullets();
@@ -1136,6 +1333,100 @@ function renderDebris() {
         ctx.strokeStyle = debrisColor(d.size);
         ctx.lineWidth   = 2 / d.radius;
         ctx.stroke();
+
+        ctx.restore();
+    }
+}
+
+function renderFriendlies() {
+    for (const f of friendlies) {
+        ctx.save();
+        ctx.translate(f.x, f.y);
+
+        if (f.type === 'spaceman') {
+            const bob = Math.sin(f.bobTimer * 1.8) * 2;
+            ctx.translate(0, bob);
+
+            ctx.shadowColor = '#88ffee';
+            ctx.shadowBlur  = 10;
+
+            // Body (suit torso)
+            ctx.fillStyle = '#ddddff';
+            ctx.fillRect(-5, 2, 10, 10);
+            ctx.strokeStyle = '#aabbff';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(-5, 2, 10, 10);
+
+            // Helmet
+            ctx.beginPath();
+            ctx.arc(0, -4, 7, 0, Math.PI * 2);
+            ctx.fillStyle = '#ccddff';
+            ctx.fill();
+            ctx.strokeStyle = '#88aaff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Visor (gold tinted)
+            ctx.beginPath();
+            ctx.ellipse(0, -4, 4, 3, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,220,80,0.75)';
+            ctx.fill();
+
+            // Arms
+            ctx.strokeStyle = '#ccddff';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(-5, 4);  ctx.lineTo(-10, 8);  ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(5, 4);   ctx.lineTo(10, 8);   ctx.stroke();
+
+            // Legs
+            ctx.beginPath(); ctx.moveTo(-3, 12); ctx.lineTo(-4, 18);  ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(3, 12);  ctx.lineTo(4, 18);   ctx.stroke();
+
+        } else {
+            // ISS
+            ctx.shadowColor = '#aaddff';
+            ctx.shadowBlur  = 14;
+
+            // Central truss bar (horizontal)
+            ctx.fillStyle   = '#cccccc';
+            ctx.strokeStyle = '#aaaaaa';
+            ctx.lineWidth   = 2;
+            ctx.fillRect(-ISS_RADIUS, -4, ISS_RADIUS * 2, 8);
+            ctx.strokeRect(-ISS_RADIUS, -4, ISS_RADIUS * 2, 8);
+
+            // Habitat module (center cylinder)
+            ctx.fillStyle   = '#ddeeff';
+            ctx.fillRect(-14, -9, 28, 18);
+            ctx.strokeStyle = '#88aacc';
+            ctx.lineWidth   = 1.5;
+            ctx.strokeRect(-14, -9, 28, 18);
+
+            // Module windows
+            [-5, 5].forEach(ox => {
+                ctx.beginPath();
+                ctx.arc(ox, 0, 3, 0, Math.PI * 2);
+                ctx.fillStyle = '#aaddff';
+                ctx.fill();
+            });
+
+            // Solar panel arrays (left + right)
+            [[-ISS_RADIUS - 2, -12], [ISS_RADIUS - 18, -12]].forEach(([px, py]) => {
+                ctx.fillStyle   = '#2255aa';
+                ctx.strokeStyle = '#4488ff';
+                ctx.lineWidth   = 1;
+                ctx.fillRect(px, py, 18, 24);
+                ctx.strokeRect(px, py, 18, 24);
+                // Panel lines
+                ctx.strokeStyle = '#6699cc';
+                ctx.lineWidth = 0.5;
+                for (let j = 1; j < 4; j++) {
+                    ctx.beginPath();
+                    ctx.moveTo(px, py + j * 6);
+                    ctx.lineTo(px + 18, py + j * 6);
+                    ctx.stroke();
+                }
+            });
+        }
 
         ctx.restore();
     }
@@ -1295,16 +1586,17 @@ function renderFloatingTexts() {
 }
 
 function renderBullets() {
-    ctx.save();
-    ctx.fillStyle   = '#ffee44';
-    ctx.shadowColor = '#ffee44';
-    ctx.shadowBlur  = 8;
     for (const b of bullets) {
+        const color = b.color || '#ffee44';
+        ctx.save();
+        ctx.fillStyle   = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur  = 8;
         ctx.beginPath();
         ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
     }
-    ctx.restore();
 }
 
 function renderShip() {
@@ -1439,6 +1731,27 @@ function renderHUD() {
         ctx.textAlign = 'left';
         ctx.fillText(`BOMB x${bombs}  [B]`, 16, by);
         ctx.shadowBlur = 0;
+    }
+
+    // Auto-aim assist indicator (bottom-right)
+    if (assistActive) {
+        const barW = 110;
+        const bx   = CANVAS_W - barW - 16;
+        const by   = CANVAS_H - 36;
+        const pct  = assistTimer / ASSIST_DURATION;
+
+        ctx.font      = 'bold 13px monospace';
+        ctx.fillStyle = '#00eeff';
+        ctx.shadowColor = '#00eeff';
+        ctx.shadowBlur  = 8;
+        ctx.textAlign = 'right';
+        ctx.fillText(`AUTO-FIRE  ${Math.ceil(assistTimer)}s`, CANVAS_W - 16, by - 6);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fillRect(bx, by, barW, 6);
+        ctx.fillStyle = '#00eeff';
+        ctx.fillRect(bx, by, pct * barW, 6);
     }
 
     ctx.restore();
