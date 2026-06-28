@@ -40,8 +40,8 @@ const ISS_RADIUS          = 42;
 const SPACEMAN_PENALTY    = 250;
 const ISS_PENALTY         = 1000;
 const ASSIST_DURATION     = 15;   // seconds auto-fire lasts
-const SPACEMAN_FIRE_RATE  = 0.5;  // seconds between auto-shots (spaceman)
-const ISS_FIRE_RATE       = 0.28; // seconds between auto-shots (ISS)
+const SPACEMAN_FIRE_RATE  = SHOOT_COOLDOWN; // matches default shooting rhythm
+const ISS_FIRE_RATE       = 0.5;            // star-burst interval (8 bullets at once)
 const FRIENDLY_SPAWN_BASE = 28;   // seconds between friendly spawns
 
 const MAX_LEADERBOARD = 10;
@@ -1268,12 +1268,13 @@ function updateFriendlies(dt) {
         f.y += f.vy * dt;
         f.bobTimer += dt;
 
-        // Wrap at canvas edges so they stay in play
-        const r = f.type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS;
-        if (f.x < -r)          f.x = CANVAS_W + r;
-        if (f.x > CANVAS_W + r) f.x = -r;
-        if (f.y < -r)          f.y = CANVAS_H + r;
-        if (f.y > CANVAS_H + r) f.y = -r;
+        // Remove once fully off canvas — no wrapping, they pass through on their trajectory
+        const margin = (f.type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS) + 60;
+        if (f.x < -margin || f.x > CANVAS_W + margin ||
+            f.y < -margin || f.y > CANVAS_H + margin) {
+            if (f === assistSource) { assistActive = false; assistSource = null; }
+            f.active = false;
+        }
     }
     friendlies = friendlies.filter(f => f.active);
 
@@ -1297,7 +1298,7 @@ function updateAssist(dt) {
 
     assistTimer -= dt;
     if (assistTimer <= 0) {
-        // Mark source as still-touching so player must leave and re-enter hitbox
+        // Preserve shipTouching so player must leave and re-enter to get another 15s
         if (assistSource) assistSource.shipTouching = circlesOverlap(ship, assistSource);
         assistActive = false;
         assistSource = null;
@@ -1308,15 +1309,28 @@ function updateAssist(dt) {
     assistFireTimer -= dt;
     if (assistFireTimer <= 0) {
         assistFireTimer = assistFireRate;
-        const sx     = assistSource.x;
-        const sy     = assistSource.y;
-        const target = findNearestTarget(sx, sy);
-        if (target) {
-            const angle = Math.atan2(target.x - sx, -(target.y - sy));
-            const b = createBullet(sx, sy, angle);
-            b.color = '#00eeff';
-            bullets.push(b);
+        const sx = assistSource.x;
+        const sy = assistSource.y;
+
+        if (assistSource.type === 'iss') {
+            // Star burst: 8 bullets evenly spread in all directions
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const b = createBullet(sx, sy, angle);
+                b.color = '#00eeff';
+                bullets.push(b);
+            }
             playLaser();
+        } else {
+            // Spaceman: single aimed shot at nearest threat
+            const target = findNearestTarget(sx, sy);
+            if (target) {
+                const angle = Math.atan2(target.x - sx, -(target.y - sy));
+                const b = createBullet(sx, sy, angle);
+                b.color = '#00eeff';
+                bullets.push(b);
+                playLaser();
+            }
         }
     }
 }
@@ -1555,11 +1569,11 @@ function checkCollisions() {
     bullets    = bullets.filter(b => b.active);
     friendlies = friendlies.filter(f => f.active);
 
-    // Ship vs Friendlies — activate assist on entering hitbox; friendly stays in play
+    // Ship vs Friendlies — any fresh hitbox entry (re)starts the 15s assist
     for (const f of friendlies) {
         if (!f.active) continue;
         const touching = circlesOverlap(ship, f);
-        if (touching && !f.shipTouching && assistTimer <= 0) {
+        if (touching && !f.shipTouching) {
             collectFriendly(f);
         }
         f.shipTouching = touching;
