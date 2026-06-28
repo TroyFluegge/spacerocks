@@ -378,11 +378,12 @@ function createEnemy(x, y, vx, vy) {
 function createFriendly(x, y, vx, vy, type) {
     return {
         x, y, vx, vy,
-        radius:   type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS,
-        type,     // 'spaceman' | 'iss'
-        rotation: Math.random() * Math.PI * 2,
-        bobTimer: Math.random() * Math.PI * 2,
-        active:   true,
+        radius:      type === 'iss' ? ISS_RADIUS : SPACEMAN_RADIUS,
+        type,        // 'spaceman' | 'iss'
+        rotation:    Math.random() * Math.PI * 2,
+        bobTimer:    Math.random() * Math.PI * 2,
+        shipTouching: false,   // true while ship hitbox overlaps — prevents instant re-trigger
+        active:      true,
     };
 }
 
@@ -917,11 +918,11 @@ function updatePowerups(dt) {
     }
 }
 
-function findNearestTarget() {
+function findNearestTarget(ox, oy) {
     let nearest = null, bestDist = Infinity;
     for (const obj of [...debris, ...enemies]) {
         if (!obj.active) continue;
-        const d = Math.hypot(obj.x - ship.x, obj.y - ship.y);
+        const d = Math.hypot(obj.x - ox, obj.y - oy);
         if (d < bestDist) { bestDist = d; nearest = obj; }
     }
     return nearest;
@@ -962,6 +963,8 @@ function updateAssist(dt) {
 
     assistTimer -= dt;
     if (assistTimer <= 0) {
+        // Mark source as still-touching so player must leave and re-enter hitbox
+        if (assistSource) assistSource.shipTouching = circlesOverlap(ship, assistSource);
         assistActive = false;
         assistSource = null;
         notification = { text: 'AUTO-FIRE ENDED', color: '#88ddff', timer: 2 };
@@ -971,10 +974,10 @@ function updateAssist(dt) {
     assistFireTimer -= dt;
     if (assistFireTimer <= 0) {
         assistFireTimer = assistFireRate;
-        const target = findNearestTarget();
+        const sx     = assistSource.x;
+        const sy     = assistSource.y;
+        const target = findNearestTarget(sx, sy);
         if (target) {
-            const sx    = assistSource.x;
-            const sy    = assistSource.y;
             const angle = Math.atan2(target.x - sx, -(target.y - sy));
             const b = createBullet(sx, sy, angle);
             b.color = '#00eeff';
@@ -1218,12 +1221,14 @@ function checkCollisions() {
     bullets    = bullets.filter(b => b.active);
     friendlies = friendlies.filter(f => f.active);
 
-    // Ship vs Friendlies — activate assist on touch; friendly stays in play
+    // Ship vs Friendlies — activate assist on entering hitbox; friendly stays in play
     for (const f of friendlies) {
         if (!f.active) continue;
-        if (circlesOverlap(ship, f) && assistTimer <= 0) {
+        const touching = circlesOverlap(ship, f);
+        if (touching && !f.shipTouching && assistTimer <= 0) {
             collectFriendly(f);
         }
+        f.shipTouching = touching;
     }
 }
 
