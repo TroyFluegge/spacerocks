@@ -2,21 +2,34 @@
 
 ## Running the game
 
-No build step. Serve the directory over HTTP (required for reliable audio context init):
+Use the score server (zero extra dependencies — Python stdlib only):
 
 ```bash
-python3 -m http.server 8765
-# then open http://localhost:8765/index.html
+python3 server.py
+# then open http://localhost:8765
 ```
 
-Opening `index.html` as a `file://` URL also works but Web Audio may be restricted in some browsers.
+The server serves static files AND handles the `/api/scores` REST API.
+Scores are stored in `scores.db` (SQLite, created automatically).
+
+Opening `index.html` as a `file://` URL still works but the leaderboard
+will fall back to localStorage-only (no shared global scores).
 
 ## File structure
 
 ```
-index.html   — canvas element (800×600) + minimal CSS centering
-game.js      — everything else (~1,500 lines, no modules)
+index.html   — canvas element + minimal CSS
+game.js      — all game logic (~2,600 lines, no modules)
+server.py    — Python score server (stdlib only, no pip install)
+scores.db    — SQLite score database (auto-created on first run)
 ```
+
+## Score API
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/scores` | — | `[{name, score, created_at}]` top 10 |
+| POST | `/api/scores` | `{name, score}` | `[{name, score, created_at}]` updated top 10 |
 
 `game.js` is organized into clearly commented sections in this order:
 

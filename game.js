@@ -79,8 +79,9 @@ window.addEventListener('keydown', e => {
     // Name entry input — handle character capture
     if (state === 'name_entry') {
         if (e.key === 'Enter') {
-            submitScore(nameEntryText.trim() || 'PILOT');
+            const enteredName = nameEntryText.trim() || 'PILOT';
             state = 'menu';
+            submitScore(enteredName); // async — fire and forget
         } else if (e.key === 'Backspace') {
             nameEntryText = nameEntryText.slice(0, -1);
         } else if (e.key.length === 1 && nameEntryText.length < MAX_NAME_LENGTH) {
@@ -428,13 +429,14 @@ function getLevelConfig(level) {
 
 // ── Game State ───────────────────────────────────────────────────────────────
 
-let state;          // 'menu' | 'playing' | 'game_over' | 'name_entry'
+let state;              // 'menu' | 'playing' | 'game_over' | 'name_entry'
 let score;
 let lives;
 let level;
-let leaderboard;    // [{name, score}, ...] top 10, sorted desc
-let nameEntryText;  // string being typed on name entry screen
-let nameEntryRank;  // 1-based rank of the just-earned score
+let leaderboard;        // [{name, score}, ...] top 10, sorted desc
+let leaderboardLoading; // true while fetching from server
+let nameEntryText;      // string being typed on name entry screen
+let nameEntryRank;      // 1-based rank of the just-earned score
 
 let ship;
 let bullets;
@@ -1024,6 +1026,7 @@ function updateMenu() {
 function updateGameOver(dt) {
     gameOverLockout -= dt;
     if (gameOverLockout <= 0 && isStart()) {
+        fetchLeaderboard(); // pull fresh global scores when returning to menu
         state = 'menu';
     }
 }
@@ -1628,19 +1631,33 @@ function debrisColor(size) {
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
 
-function loadLeaderboard() {
+function loadLeaderboardCache() {
     try {
         const raw = localStorage.getItem('spaceRocksLeaderboard');
         if (raw) return JSON.parse(raw);
     } catch (_) {}
-    // Migrate legacy single hi-score if present
+    // Migrate legacy single hi-score
     const legacy = parseInt(localStorage.getItem('spaceRocksHiScore') || '0', 10);
     if (legacy > 0) return [{ name: 'PILOT', score: legacy }];
     return [];
 }
 
-function saveLeaderboard() {
-    localStorage.setItem('spaceRocksLeaderboard', JSON.stringify(leaderboard));
+function cacheLeaderboard(data) {
+    leaderboard = data;
+    try { localStorage.setItem('spaceRocksLeaderboard', JSON.stringify(data)); } catch (_) {}
+}
+
+async function fetchLeaderboard() {
+    leaderboardLoading = true;
+    try {
+        const res = await fetch('/api/scores');
+        if (!res.ok) throw new Error('server error');
+        cacheLeaderboard(await res.json());
+    } catch (_) {
+        // Keep cached data — server may not be running
+    } finally {
+        leaderboardLoading = false;
+    }
 }
 
 function qualifiesForLeaderboard(s) {
@@ -1649,11 +1666,24 @@ function qualifiesForLeaderboard(s) {
     return s > leaderboard[leaderboard.length - 1].score;
 }
 
-function submitScore(name) {
-    leaderboard.push({ name: name.slice(0, MAX_NAME_LENGTH).toUpperCase(), score });
-    leaderboard.sort((a, b) => b.score - a.score);
-    if (leaderboard.length > MAX_LEADERBOARD) leaderboard.length = MAX_LEADERBOARD;
-    saveLeaderboard();
+async function submitScore(name) {
+    const clean = (name || 'PILOT').slice(0, MAX_NAME_LENGTH).toUpperCase();
+    // Optimistic local update so the menu shows it immediately
+    const optimistic = [...leaderboard, { name: clean, score }]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_LEADERBOARD);
+    cacheLeaderboard(optimistic);
+
+    try {
+        const res = await fetch('/api/scores', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ name: clean, score }),
+        });
+        if (res.ok) cacheLeaderboard(await res.json()); // replace with authoritative server list
+    } catch (_) {
+        // Optimistic update stays if server is unreachable
+    }
 }
 
 function topScore() {
@@ -1742,10 +1772,15 @@ function renderMenu() {
     ctx.fillStyle = '#ffcc44';
     ctx.shadowColor = '#ffcc44';
     ctx.shadowBlur  = 6;
-    ctx.fillText('HIGH SCORES', cx, top);
+    ctx.fillText('GLOBAL HIGH SCORES', cx, top);
     ctx.shadowBlur = 0;
 
-    if (leaderboard.length === 0) {
+    if (leaderboardLoading && leaderboard.length === 0) {
+        const dots = '.'.repeat(1 + Math.floor(Date.now() / 400) % 3);
+        ctx.font      = '14px monospace';
+        ctx.fillStyle = '#555555';
+        ctx.fillText(`loading${dots}`, cx, top + rowH * 1.5);
+    } else if (leaderboard.length === 0) {
         ctx.font      = '14px monospace';
         ctx.fillStyle = '#555555';
         ctx.fillText('— no scores yet —', cx, top + rowH * 1.5);
@@ -1762,6 +1797,13 @@ function renderMenu() {
             ctx.textAlign = 'right';
             ctx.fillText(entry.score.toLocaleString(), cx + 130, y);
         });
+        // Show refresh state in corner
+        if (leaderboardLoading) {
+            ctx.font      = '11px monospace';
+            ctx.fillStyle = '#444444';
+            ctx.textAlign = 'center';
+            ctx.fillText('refreshing…', cx, top + (MAX_LEADERBOARD + 1) * rowH + 8);
+        }
     }
 
     ctx.restore();
@@ -2539,7 +2581,9 @@ function gameLoop(timestamp) {
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 function init() {
-    leaderboard = loadLeaderboard();
+    leaderboard        = loadLeaderboardCache(); // instant local load
+    leaderboardLoading = false;
+    fetchLeaderboard();                          // async server refresh
     resizeCanvas();
     state   = 'menu';
     score   = 0;
