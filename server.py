@@ -10,6 +10,7 @@ Usage:
 import http.server
 import json
 import os
+import socket
 import sqlite3
 import sys
 import threading
@@ -118,7 +119,15 @@ if __name__ == '__main__':
         conn.close()
 
     server = http.server.ThreadingHTTPServer(('', PORT), Handler)
-    print(f'Space Rocks  ▶  http://localhost:{PORT}')
+
+    try:
+        lan_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        lan_ip = '127.0.0.1'
+
+    print(f'Space Rocks  ▶  http://localhost:{PORT}  (this machine)')
+    print(f'Share with others on the same Wi-Fi:')
+    print(f'             ▶  http://{lan_ip}:{PORT}')
     print(f'Scores DB    ▶  {DB_PATH}')
     print('Press Ctrl+C to stop.\n')
     try:

@@ -82,18 +82,26 @@ window.addEventListener('keydown', e => {
 
     // Name entry input — handle character capture
     if (state === 'name_entry') {
+        const _ni = document.getElementById('nameInput');
+        const mobileInputFocused = _ni && document.activeElement === _ni;
+
         if (e.key === 'Enter') {
-            const _ni = document.getElementById('nameInput');
             if (_ni) { _ni.blur(); _ni.style.pointerEvents = 'none'; }
             const enteredName = nameEntryText.trim() || 'PILOT';
             state = 'menu';
             submitScore(enteredName); // async — fire and forget
-        } else if (e.key === 'Backspace') {
-            nameEntryText = nameEntryText.slice(0, -1);
-        } else if (e.key.length === 1 && nameEntryText.length < MAX_NAME_LENGTH) {
-            nameEntryText += e.key.toUpperCase();
+            e.preventDefault();
+        } else if (mobileInputFocused) {
+            // Mobile: let the input receive characters natively; oninput syncs nameEntryText.
+            // Do NOT call preventDefault here — that's what was reversing the input.
+        } else {
+            if (e.key === 'Backspace') {
+                nameEntryText = nameEntryText.slice(0, -1);
+            } else if (e.key.length === 1 && nameEntryText.length < MAX_NAME_LENGTH) {
+                nameEntryText += e.key.toUpperCase();
+            }
+            e.preventDefault();
         }
-        e.preventDefault();
     }
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -1656,17 +1664,10 @@ function checkCollisions() {
                         _ni.value = '';
                         _ni.style.pointerEvents = 'auto';
                         _ni.focus();
+                        // oninput is the single source of truth for mobile typing.
+                        // Enter/submit is handled by the window keydown listener above.
                         _ni.oninput = () => {
                             nameEntryText = _ni.value.toUpperCase().slice(0, MAX_NAME_LENGTH);
-                        };
-                        _ni.onkeydown = ev => {
-                            if (ev.key === 'Enter') {
-                                _ni.blur();
-                                _ni.style.pointerEvents = 'none';
-                                const enteredName = nameEntryText.trim() || 'PILOT';
-                                state = 'menu';
-                                submitScore(enteredName);
-                            }
                         };
                     }
                 } else {
