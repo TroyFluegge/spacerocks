@@ -1,17 +1,17 @@
 # Space Rocks
 
-An Asteroids-style space shooter built with HTML5 Canvas and vanilla JavaScript. No dependencies, no build step — just open `index.html` in a browser and play.
+A modern Asteroids-style space shooter built with HTML5 Canvas and vanilla JavaScript. No build step, no dependencies — just a Python server for shared global high scores.
 
-## Play
-
-Clone or download the repo, then open `index.html` directly in any modern browser.
+## Running
 
 ```bash
 git clone https://github.com/TroyFluegge/space-rocks.git
 cd space-rocks
-open index.html   # macOS
-# or just double-click index.html
+python3 server.py
+# open http://localhost:8765
 ```
+
+The server handles both game files and the global leaderboard API. Scores are stored in `scores.db` (SQLite, auto-created). You can also open `index.html` directly as a file, but the leaderboard will fall back to local-only storage.
 
 ## Controls
 
@@ -21,7 +21,7 @@ open index.html   # macOS
 | `S` / `↓` | Reverse thrust |
 | `A` / `←` | Rotate left |
 | `D` / `→` | Rotate right |
-| `Space` | Shoot / hold for laser |
+| `Space` | Shoot / hold for laser beam |
 | `B` | Detonate bomb |
 
 ## Gameplay
@@ -29,24 +29,40 @@ open index.html   # macOS
 - Shoot space rocks to break them apart — large → medium → small → gone
 - Avoid collisions or lose a life (3 lives total)
 - Clear all rocks to advance to the next level
-- Levels increase rock speed and spawn rate
+- Each level increases rock speed, spawn rate, and enemy aggression
+- The space background changes each level (8 distinct themes cycling)
 
 ## Power-ups
 
-Colored diamond pickups drift across the field. Collect them by flying into them. They also have a 15% chance to drop from large rocks.
+Colored diamond pickups drift across the field. Collect them by flying into them. Large rocks have a 15% chance to drop one on destruction.
 
-| Icon | Type | Effect | Duration |
+| Color | Type | Effect | Duration |
 |---|---|---|---|
-| 🟡 **R** | Rapid Fire | Shoot cooldown drops from 0.25s → 0.08s | 15s |
-| 🔵 **S** | Spread Shot | Fires 3 bullets in a fan | 15s |
-| 🟣 **L** | Laser Beam | Hold Space for a continuous beam raycast | 15s |
-| 🟠 **B** | Bomb | Stored (up to 3). Press `B` to split all rocks and destroy all enemies | One-use |
+| Yellow **R** | Rapid Fire | Fire rate 0.25s → 0.08s | 15s |
+| Cyan **S** | Spread Shot | 3 bullets in a fan | 15s |
+| Magenta **L** | Laser Beam | Hold Space for a continuous raycast beam | 15s |
+| Orange **B** | Bomb | Stored (up to 3) — press `B` to split all rocks and destroy all enemies | One-use |
 
-The active weapon is shown in the bottom-left with a countdown timer bar. Laser mode also shows a charge meter that depletes while firing and recharges when idle. If the laser overheats, it locks out briefly (bar turns red).
+Active weapon shown bottom-left with a countdown bar. Laser mode also shows a charge meter; overheating locks the laser out briefly.
+
+## Friendlies
+
+Spacemen and International Space Stations drift across the field on a straight trajectory and eventually leave the screen.
+
+| Friendly | Touch effect | Shot effect | Fire pattern |
+|---|---|---|---|
+| Spaceman | 15s auto-aim assist | −250 pts | Single aimed shot at nearest rock (0.25s rate) |
+| ISS | 15s auto-aim assist | −1000 pts | 8-bullet star burst in all directions (0.5s rate) |
+
+**To activate:** fly your ship into the friendly's hitbox. A cyan particle burst and notification confirm activation. The friendly continues on its path and fires from its own position.
+
+**Re-activation:** after 15 seconds expires, fly back into the same friendly (while it's still on screen) for another 15 seconds.
+
+**Immunity:** a friendly you are currently touching cannot be hit by your bullets, so flying into one while shooting is safe.
 
 ## Enemies
 
-Green glowing UFO saucers enter from screen edges every 7–12 seconds. They are worth **500 points**. Starting at level 3 they gently home in on your position. One shot destroys them; colliding with one costs a life.
+Green glowing UFO saucers spawn from screen edges every 7–12 seconds (interval shrinks with level). Worth **500 points** each. Starting at level 3 they home in on your position. One shot destroys them; collision costs a life.
 
 ## Scoring
 
@@ -56,12 +72,18 @@ Green glowing UFO saucers enter from screen edges every 7–12 seconds. They are
 | Medium rock | 50 |
 | Small rock | 100 |
 | Enemy saucer | 500 |
+| Shoot spaceman | −250 |
+| Shoot ISS | −1,000 |
 
-Hi-score is saved in `localStorage` and persists across sessions.
+## Global High Scores
+
+The top 10 scores are shared across all players on the same server. When your game ends with a qualifying score, a name entry screen appears — type your name (up to 12 characters) and press **Enter** to submit. The leaderboard is visible on the main menu and updates live as other players post scores.
 
 ## Files
 
 ```
 index.html   — canvas shell and CSS
-game.js      — all game logic (~1,500 lines)
+game.js      — all game logic (~2,600 lines, no modules)
+server.py    — Python score server (stdlib only, no pip install needed)
+scores.db    — SQLite score database (auto-created on first run)
 ```
