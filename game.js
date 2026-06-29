@@ -1106,6 +1106,7 @@ function startLevel(n) {
 }
 
 function startGame() {
+    fetchLeaderboard(); // pull latest scores from server before the game begins
     score  = 0;
     lives  = 3;
     bombs  = 0;
