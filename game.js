@@ -97,6 +97,9 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 canvas.addEventListener('touchstart', e => {
     e.preventDefault();
     ensureAudio();
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+    }
     const t = e.touches[0];
     touch = { active: true, startX: t.clientX, startY: t.clientY,
               startTime: Date.now(), curX: t.clientX, curY: t.clientY };
