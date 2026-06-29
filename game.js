@@ -47,6 +47,10 @@ const FRIENDLY_SPAWN_BASE = 28;   // seconds between friendly spawns
 const MAX_LEADERBOARD = 10;
 const MAX_NAME_LENGTH = 12;
 
+const GYRO_DEAD_ZONE   = 5;   // degrees of tilt ignored on each side
+const GYRO_MAX_TILT    = 30;  // degrees for full rotation speed
+const GYRO_THRUST_ANGLE = 12; // degrees forward tilt to activate thrust
+
 // Unit-scale polygon vertices for three irregular rock shapes
 const DEBRIS_SHAPES = [
     [[ 0,-1],[0.5,-0.7],[0.9,-0.3],[0.85,0.4],[0.3,0.9],[-0.5,0.8],[-0.9,0.2],[-0.6,-0.6]],
@@ -97,6 +101,7 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 canvas.addEventListener('touchstart', e => {
     e.preventDefault();
     ensureAudio();
+    initGyro();
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
     }
@@ -133,23 +138,61 @@ canvas.addEventListener('touchend', e => {
     touch.active = false;
 }, { passive: false });
 
-const DRAG_THRESHOLD = 30;
-
-function isLeft()    {
-    return keys['KeyA'] || keys['ArrowLeft'] ||
-           (touch.active && (touch.curX - touch.startX) < -DRAG_THRESHOLD);
-}
-function isRight()   {
-    return keys['KeyD'] || keys['ArrowRight'] ||
-           (touch.active && (touch.curX - touch.startX) >  DRAG_THRESHOLD);
-}
+function isLeft()    { return keys['KeyA'] || keys['ArrowLeft'];  }
+function isRight()   { return keys['KeyD'] || keys['ArrowRight']; }
 function isForward() {
-    return keys['KeyW'] || keys['ArrowUp'] ||
-           (touch.active && (touch.curY - touch.startY) < -DRAG_THRESHOLD);
+    if (keys['KeyW'] || keys['ArrowUp']) return true;
+    if (gyroActive) return (gyroBaseBeta - gyroBeta) > GYRO_THRUST_ANGLE;
+    return false;
 }
 function isBack()    { return keys['KeyS'] || keys['ArrowDown']; }
 function isShoot()   { return keys['Space'] || touchShootPending; }
 function isStart()   { return keys['Space'] || keys['Enter']; }
+
+// Returns -1..1: negative = rotate left, positive = rotate right.
+// Returns 0 when inside dead zone or gyro inactive.
+function gyroRotInput() {
+    if (!gyroActive) return 0;
+    const delta = gyroGamma - gyroBaseGamma;
+    if (Math.abs(delta) < GYRO_DEAD_ZONE) return 0;
+    const sign = delta > 0 ? 1 : -1;
+    return sign * Math.min(1, (Math.abs(delta) - GYRO_DEAD_ZONE) / (GYRO_MAX_TILT - GYRO_DEAD_ZONE));
+}
+
+function calibrateGyro() {
+    gyroBaseBeta  = gyroBeta;
+    gyroBaseGamma = gyroGamma;
+}
+
+function initGyro() {
+    if (gyroInitialized) return;
+    gyroInitialized = true;
+
+    function startListening() {
+        window.addEventListener('deviceorientation', e => {
+            if (e.gamma === null || e.beta === null) return;
+            gyroBeta  = e.beta;
+            gyroGamma = e.gamma;
+            if (!gyroActive) {
+                gyroActive = true;
+                calibrateGyro();
+                if (state === 'playing') {
+                    notification = { text: 'TILT TO STEER  TAP TO SHOOT', color: '#00eeff', timer: 3 };
+                }
+            }
+        });
+    }
+
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+ requires explicit permission from a user gesture
+        DeviceOrientationEvent.requestPermission()
+            .then(r => { if (r === 'granted') startListening(); })
+            .catch(() => {});
+    } else if (typeof DeviceOrientationEvent !== 'undefined') {
+        startListening();
+    }
+}
 
 // ── Audio ───────────────────────────────────────────────────────────────────
 
@@ -533,6 +576,14 @@ let bgCanvas = null;
 // Touch / mobile input state
 let touch = { active: false, startX: 0, startY: 0, startTime: 0, curX: 0, curY: 0 };
 let touchShootPending = false;
+
+// Gyroscope state
+let gyroActive       = false;  // orientation API is running and returning data
+let gyroInitialized  = false;  // initGyro() already called
+let gyroBeta         = 0;      // current device beta (front-back tilt)
+let gyroGamma        = 0;      // current device gamma (left-right tilt)
+let gyroBaseBeta     = 0;      // calibration baseline beta
+let gyroBaseGamma    = 0;      // calibration baseline gamma
 
 // ── Stars ────────────────────────────────────────────────────────────────────
 
@@ -1061,6 +1112,7 @@ function startGame() {
     assistSource    = null;
     assistTimer     = 0;
     assistFireTimer = 0;
+    calibrateGyro(); // snapshot current tilt as the neutral position
     resetWeapon();
     startLevel(1);
     state  = 'playing';
@@ -1116,9 +1168,13 @@ function updatePlaying(dt) {
 }
 
 function updateShip(dt) {
-    // Rotation
-    if (isLeft())  ship.rotation -= ROTATION_SPEED * dt;
-    if (isRight()) ship.rotation += ROTATION_SPEED * dt;
+    // Rotation — keyboard is binary full-speed; gyro is proportional -1..1
+    if (isLeft())             ship.rotation -= ROTATION_SPEED * dt;
+    else if (isRight())       ship.rotation += ROTATION_SPEED * dt;
+    else {
+        const rot = gyroRotInput();
+        if (rot !== 0) ship.rotation += rot * ROTATION_SPEED * dt;
+    }
 
     // Thrust
     const thrusting = isForward();
