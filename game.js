@@ -1551,11 +1551,22 @@ function checkCollisions() {
     }
     powerups = powerups.filter(p => p.active);
 
-    // Bullets vs Friendlies (penalty + friendly fire alert)
+    // Ship vs Friendlies — checked FIRST so shipTouching is current before bullet check
+    for (const f of friendlies) {
+        if (!f.active) continue;
+        const touching = circlesOverlap(ship, f);
+        if (touching && !f.shipTouching) {
+            collectFriendly(f);
+        }
+        f.shipTouching = touching;
+    }
+
+    // Bullets vs Friendlies — immune if ship is touching it or it is the active assist source
     for (const b of bullets) {
         if (!b.active) continue;
         for (const f of friendlies) {
             if (!f.active) continue;
+            if (f.shipTouching || f === assistSource) continue;
             if (circlesOverlap(b, f)) {
                 b.active = false;
                 f.active = false;
@@ -1571,16 +1582,6 @@ function checkCollisions() {
     }
     bullets    = bullets.filter(b => b.active);
     friendlies = friendlies.filter(f => f.active);
-
-    // Ship vs Friendlies — any fresh hitbox entry (re)starts the 15s assist
-    for (const f of friendlies) {
-        if (!f.active) continue;
-        const touching = circlesOverlap(ship, f);
-        if (touching && !f.shipTouching) {
-            collectFriendly(f);
-        }
-        f.shipTouching = touching;
-    }
 }
 
 function collectPowerup(type) {
