@@ -192,18 +192,40 @@ canvas.addEventListener('touchmove', e => {
     }
 }, { passive: false });
 
+function releaseTouch(identifier) {
+    if (joystick.active && identifier === joystick.id) {
+        joystick = { active: false, id: null, curX: 0, curY: 0 };
+    }
+    if (touchShootActive && identifier === touchShootId) {
+        touchShootActive = false;
+        touchShootId = null;
+    }
+}
+
 canvas.addEventListener('touchend', e => {
     e.preventDefault();
-    for (const t of e.changedTouches) {
-        if (joystick.active && t.identifier === joystick.id) {
-            joystick = { active: false, id: null, curX: 0, curY: 0 };
-        }
-        if (touchShootActive && t.identifier === touchShootId) {
-            touchShootActive = false;
-            touchShootId = null;
-        }
-    }
+    for (const t of e.changedTouches) releaseTouch(t.identifier);
 }, { passive: false });
+
+// The OS/browser can hijack an in-progress touch (e.g. Android's "swipe down
+// to exit fullscreen" or iOS's pull-to-refresh bounce) and fire touchcancel
+// instead of touchend for it. Without this, the joystick/shoot zone stayed
+// "active" forever with stale coordinates — the ship would keep thrusting
+// in whatever direction it was last dragged, even with no finger on screen.
+canvas.addEventListener('touchcancel', e => {
+    for (const t of e.changedTouches) releaseTouch(t.identifier);
+}, { passive: true });
+
+// Belt-and-suspenders: if the page is backgrounded mid-touch (the gesture
+// above swallowed the touch entirely, or the tab/app was switched), drop
+// all touch state so controls can't get stuck on return.
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        joystick = { active: false, id: null, curX: 0, curY: 0 };
+        touchShootActive = false;
+        touchShootId = null;
+    }
+});
 
 function joystickBase() {
     return { x: JOYSTICK_BASE_R + 20, y: CANVAS_H - JOYSTICK_BASE_R - 20 };
