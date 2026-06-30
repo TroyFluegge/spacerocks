@@ -182,17 +182,10 @@ function joystickInput() {
     return { dx: (rawDx / dist) * scale, dy: (rawDy / dist) * scale };
 }
 
-// Returns -1..1: negative = rotate left, positive = rotate right.
-function rotInput() {
-    if (!joystick.active) return 0;
-    const { dx } = joystickInput();
-    return Math.abs(dx) < 0.15 ? 0 : dx;
-}
-
-function isLeft()    { return keys['KeyA'] || keys['ArrowLeft']  || (joystick.active && joystickInput().dx < -JOY_THRESH); }
-function isRight()   { return keys['KeyD'] || keys['ArrowRight'] || (joystick.active && joystickInput().dx >  JOY_THRESH); }
-function isForward() { return keys['KeyW'] || keys['ArrowUp']    || (joystick.active && joystickInput().dy < -JOY_THRESH); }
-function isBack()    { return keys['KeyS'] || keys['ArrowDown']  || (joystick.active && joystickInput().dy >  JOY_THRESH); }
+function isLeft()    { return keys['KeyA'] || keys['ArrowLeft']; }
+function isRight()   { return keys['KeyD'] || keys['ArrowRight']; }
+function isForward() { return keys['KeyW'] || keys['ArrowUp']; }
+function isBack()    { return keys['KeyS'] || keys['ArrowDown']; }
 function isShoot()   { return keys['Space'] || touchShootActive; }
 function isStart()   { return keys['Space'] || keys['Enter']; }
 
@@ -1180,26 +1173,38 @@ function updatePlaying(dt) {
 }
 
 function updateShip(dt) {
-    // Rotation — keyboard is binary full-speed; joystick is proportional -1..1
-    if (isLeft())             ship.rotation -= ROTATION_SPEED * dt;
-    else if (isRight())       ship.rotation += ROTATION_SPEED * dt;
-    else {
-        const rot = rotInput();
-        if (rot !== 0) ship.rotation += rot * ROTATION_SPEED * dt;
-    }
+    if (joystick.active) {
+        // Direct-vector control: the stick's deflection angle IS the ship's
+        // heading. Pushing up-right snaps the ship to face up-right and
+        // thrusts that way immediately, rather than rotating-then-thrusting.
+        const { dx, dy } = joystickInput();
+        const mag = Math.hypot(dx, dy);
+        const thrusting = mag > JOY_THRESH;
+        ship.thrustOn = thrusting;
+        if (thrusting) {
+            ship.rotation = Math.atan2(dx, -dy);
+            const scale = Math.min(mag, 1);
+            ship.vx += Math.sin(ship.rotation) * THRUST * scale * dt;
+            ship.vy -= Math.cos(ship.rotation) * THRUST * scale * dt;
+        }
+    } else {
+        // Keyboard: classic tank-style controls — left/right rotate in place,
+        // up/down thrust forward/backward along whichever way the ship faces.
+        if (isLeft())       ship.rotation -= ROTATION_SPEED * dt;
+        else if (isRight()) ship.rotation += ROTATION_SPEED * dt;
 
-    // Thrust
-    const thrusting = isForward();
-    const reversing = isBack();
-    ship.thrustOn = thrusting;
+        const thrusting = isForward();
+        const reversing = isBack();
+        ship.thrustOn = thrusting;
 
-    if (thrusting) {
-        ship.vx += Math.sin(ship.rotation) * THRUST * dt;
-        ship.vy -= Math.cos(ship.rotation) * THRUST * dt;
-    }
-    if (reversing) {
-        ship.vx -= Math.sin(ship.rotation) * THRUST * 0.5 * dt;
-        ship.vy += Math.cos(ship.rotation) * THRUST * 0.5 * dt;
+        if (thrusting) {
+            ship.vx += Math.sin(ship.rotation) * THRUST * dt;
+            ship.vy -= Math.cos(ship.rotation) * THRUST * dt;
+        }
+        if (reversing) {
+            ship.vx -= Math.sin(ship.rotation) * THRUST * 0.5 * dt;
+            ship.vy += Math.cos(ship.rotation) * THRUST * 0.5 * dt;
+        }
     }
 
     // Friction & speed cap
