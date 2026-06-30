@@ -28,13 +28,12 @@ The server handles both game files and the global leaderboard API. Scores are st
 ### Mobile / Touch
 | Gesture | Action |
 |---|---|
-| Quick tap (< 180 ms, < 22 px) | Fire a shot |
-| Drag left / right ≥ 30 px | Rotate ship |
-| Drag up ≥ 30 px | Thrust forward |
+| Drag left half of screen | Virtual joystick — steer and thrust |
+| Hold right half of screen | Fire continuously (needed for laser / rapid fire) |
 | Tap **B** button (bottom-right) | Detonate bomb (visible only when you have bombs) |
 | Tap on menu or game-over screen | Start / restart |
 
-Touch anywhere on the canvas and drag relative to where you touched — no fixed joystick to hunt for. Name entry on mobile opens your keyboard automatically.
+A mostly-transparent joystick appears bottom-left during play. Both fingers work independently — steer with one hand while firing with the other. Name entry on mobile opens your keyboard automatically.
 
 ## Gameplay
 
@@ -51,11 +50,15 @@ Colored diamond pickups drift across the field. Collect them by flying into them
 | Color | Type | Effect | Duration |
 |---|---|---|---|
 | Yellow **R** | Rapid Fire | Fire rate 0.25s → 0.08s | 15s |
-| Cyan **S** | Spread Shot | 3 bullets in a fan | 15s |
+| Cyan **S** | Spread Shot | 3 bullets (or 3 laser beams) in a fan | 15s |
 | Magenta **L** | Laser Beam | Hold Space for a continuous raycast beam | 15s |
 | Orange **B** | Bomb | Stored (up to 3) — press `B` to split all rocks and destroy all enemies | One-use |
 
-Active weapon shown bottom-left with a countdown bar. Laser mode also shows a charge meter; overheating locks the laser out briefly.
+Rapid Fire and Laser Beam are mutually exclusive, but **Spread Shot stacks with either one** —
+picking up Spread while Rapid or Laser is active (or vice versa) combines them and extends
+**both** effects to a 30s duration instead of 15s.
+
+Active weapons are shown bottom-left, stacked vertically, each with its own countdown bar. Laser mode also shows a charge meter; overheating locks the laser out briefly.
 
 ## Friendlies
 

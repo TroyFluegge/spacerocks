@@ -38,25 +38,26 @@ response replaces it with the authoritative list.
 
 ## Mobile / touch input
 
-Touch events are attached to `canvas` (not `window`) so `touch-action: none` is respected. A module-level `touch` object tracks the active gesture:
+Touch events are attached to `canvas` (not `window`) so `touch-action: none` is respected. Two independent fingers are tracked by identifier — a virtual joystick (left half of screen) and a continuous-fire zone (right half):
 
 ```javascript
-let touch = { active: false, startX, startY, startTime, curX, curY };
-let touchShootPending = false;  // consumed by updateShip / updateWeaponState each frame
+let joystick = { active: false, id: null, curX: 0, curY: 0 };
+let touchShootActive = false;
+let touchShootId     = null;
+let nameInputMode    = false;
 ```
 
-- **Tap** (< 180 ms, < 22 px travel): sets `touchShootPending = true` when playing; synthesizes a brief `keys['Space']` press on menu/game-over screens
-- **Drag** (while `touch.active`): `isLeft/isRight/isForward` check displacement from start point against `DRAG_THRESHOLD = 30 px`
-- **Bomb button**: drawn bottom-right when `bombs > 0 && 'ontouchstart' in window`; hit-tested on `touchstart` via `isBombButtonHit()`
-- **Name entry**: when the game transitions to `name_entry` state, the hidden `<input id="nameInput">` is focused so the mobile keyboard appears; its `oninput` keeps `nameEntryText` in sync
-
-`touchShootPending` is cleared at the end of `updateWeaponState` each frame (after both `updateShip` and the laser branch have had a chance to read it via `isShoot()`).
+- **Joystick** (left half): `touchstart` on the left half activates it and records the touch `identifier`; `touchmove` updates `curX/curY` only for the matching `identifier`; `touchend` deactivates it when that `identifier` lifts. `joystickInput()` returns `{dx, dy}` clamped to `JOYSTICK_BASE_R`; `isLeft/isRight/isForward/isBack` check `dx/dy` against `JOY_THRESH`, and `rotInput()` gives proportional rotation for diagonal drags. Rendered by `renderJoystick()` — transparent outer ring, tick marks, and a knob that follows the drag — only drawn when `'ontouchstart' in window`.
+- **Continuous fire** (right half): `touchstart` on the right half sets `touchShootActive = true` and records its own `identifier` in `touchShootId`; `isShoot()` returns true for as long as that finger is held, enabling laser beam and rapid fire to work continuously. Cleared on matching `touchend`.
+- Both zones use `e.changedTouches` so the two fingers never interfere with each other.
+- **Bomb button**: drawn bottom-right when `bombs > 0 && 'ontouchstart' in window`; hit-tested on `touchstart` via `isBombButtonHit()` (checked before the joystick/shoot zone routing).
+- **Name entry**: when the game transitions to `name_entry` state, the hidden `<input id="nameInput">` (`type="search"` to suppress iOS autocorrect) is focused and `nameInputMode = true` is set. While `nameInputMode` is true, the `window` `keydown` handler does not touch `nameEntryText` — the input's `oninput` is the sole writer, which avoids the double-write that used to reverse typed characters on mobile. `onblur` resets `nameInputMode = false`.
 
 ## game.js section order
 
 1. **Constants** — canvas size, physics tuning, scoring, powerup/friendly config
 2. **Canvas / Context** — single `canvas` + `ctx` reference; `resizeCanvas()` (calls `generateStars` + `generateBackground`)
-3. **Input** — `keys` object; touch event listeners on canvas; `DRAG_THRESHOLD`; `isLeft/isRight/isForward/isBack/isShoot/isStart`; `keydown` also captures name-entry characters when `state === 'name_entry'`
+3. **Input** — `keys` object; touch event listeners on canvas; `joystick`/`touchShootActive` state; `isLeft/isRight/isForward/isBack/isShoot/isStart`; `keydown` also captures name-entry characters when `state === 'name_entry'` (gated by `nameInputMode`)
 4. **Audio** — lazy `AudioContext` (created on first keypress); all sounds synthesized with oscillators/noise buffers
 5. **Factory functions** — `createShip`, `createBullet`, `createDebris` (includes `craters[]`), `createEnemy`, `createFriendly`, `createPowerup`
 6. **Level config** — `getLevelConfig(n)` returns spawn rate, max debris, speed multiplier
@@ -139,10 +140,22 @@ friendly's current position (`assistSource.x/y`).
 
 ## Weapon system
 
-`weaponMode` is `'normal' | 'rapid' | 'spread' | 'laser'`. Managed by `updateWeaponState(dt)` which runs every frame in `updatePlaying`.
+`weaponMode` is `'normal' | 'rapid' | 'laser'` — these three are mutually exclusive. `spreadActive`
+is a separate boolean that can stack on top of either one (or run standalone over `'normal'`).
+Managed by `updateWeaponState(dt)` which runs every frame in `updatePlaying`.
 
-- **Rapid / Spread**: handled in `updateShip` — cooldown and bullet count differ per mode
-- **Laser**: fully handled in `updateWeaponState`; sets `laserBeam = {sx,sy,ex,ey,target}` each frame while Space is held; `renderLaserBeam` reads it
+- **Rapid**: handled in `updateShip` — shortens `ship.shootCooldown` to `0.08`
+- **Spread**: also handled in `updateShip` — when `spreadActive`, fires 3 bullets in a fan
+  (`[-0.32, 0, 0.32]` rad offsets) instead of 1, regardless of `weaponMode`; adds `+0.05` to
+  whatever cooldown is active (normal or rapid)
+- **Laser**: fully handled in `updateWeaponState`; sets `laserBeams = [{sx,sy,ex,ey,target}, ...]`
+  each frame while Space is held — one beam normally, three fanned beams (same offsets as spread
+  bullets) when `spreadActive` is also true; `renderLaserBeam` iterates the array
+- **Stacking duration**: `collectPowerup()` checks whether the *other* slot is already active when
+  a pickup is collected (e.g. collecting `spread` while `weaponMode === 'rapid'`). If so, both
+  timers are set to `WEAPON_DURATION_STACKED` (30s) instead of `WEAPON_DURATION` (15s) —
+  `weaponMaxDuration`/`spreadMaxDuration` record which one applies so the HUD bar fill stays
+  accurate after a stack forms or one side expires early
 - **Bomb**: `detonateBomb()` called from `updateShip` on `KeyB` press; uses a key-used guard (`keys['_bUsed']`) to prevent repeat
 
 ## Background system
@@ -179,7 +192,7 @@ Noise-based sounds (explosions, bomb) use `AudioBufferSourceNode` with a random 
 ## Known quirks
 
 - **Headless Chrome viewport**: `100vh` in headless resolves smaller than the canvas. Fixed with `min-height: 100vh` on `body`. Real browsers unaffected.
-- **Laser beam in tests**: `laserBeam` is reset to `null` at the top of `updateWeaponState` each frame, so injecting it via CDP between frames won't produce a visible beam. Works correctly during real gameplay.
+- **Laser beam in tests**: `laserBeams` is reset to `[]` at the top of `updateWeaponState` each frame, so injecting it via CDP between frames won't produce a visible beam. Works correctly during real gameplay.
 - **AudioContext suspended**: Chrome may suspend the context even after creation. `ensureAudio()` calls `audioCtx.resume()` defensively on each keypress.
 - **bgCanvas on resize**: `generateBackground()` must be called after every resize because the offscreen canvas is sized to `CANVAS_W × CANVAS_H`.
 - **Touch audio gate**: `ensureAudio()` is called in the `touchstart` handler so the first tap (which could be a menu tap before any key is pressed) properly unlocks the `AudioContext` on mobile Chrome/Safari.

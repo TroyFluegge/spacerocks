@@ -27,6 +27,7 @@ const ENEMY_HOMING_LEVEL  = 3;  // level at which enemies start homing
 const POWERUP_RADIUS      = 14;
 const POWERUP_LIFETIME    = 12; // seconds before powerup disappears
 const WEAPON_DURATION     = 15; // seconds a weapon upgrade lasts
+const WEAPON_DURATION_STACKED = 30; // seconds when spread is stacked with rapid/laser
 const MAX_BOMBS           = 3;
 const LASER_DRAIN         = 0.38; // charge/sec while firing
 const LASER_REGEN         = 0.22; // charge/sec while not firing
@@ -47,9 +48,9 @@ const FRIENDLY_SPAWN_BASE = 28;   // seconds between friendly spawns
 const MAX_LEADERBOARD = 10;
 const MAX_NAME_LENGTH = 12;
 
-const GYRO_DEAD_ZONE   = 5;   // degrees of tilt ignored on each side
-const GYRO_MAX_TILT    = 30;  // degrees for full rotation speed
-const GYRO_THRUST_ANGLE = 12; // degrees forward tilt to activate thrust
+const JOYSTICK_BASE_R = 70;  // outer ring radius px
+const JOYSTICK_KNOB_R = 28;  // knob radius px
+const JOY_THRESH      = 0.2; // dead-zone fraction for binary actions
 
 // Unit-scale polygon vertices for three irregular rock shapes
 const DEBRIS_SHAPES = [
@@ -82,17 +83,16 @@ window.addEventListener('keydown', e => {
 
     // Name entry input — handle character capture
     if (state === 'name_entry') {
-        const _ni = document.getElementById('nameInput');
-        const mobileInputFocused = _ni && document.activeElement === _ni;
-
         if (e.key === 'Enter') {
+            const _ni = document.getElementById('nameInput');
             if (_ni) { _ni.blur(); _ni.style.pointerEvents = 'none'; }
+            nameInputMode = false;
             const enteredName = nameEntryText.trim() || 'PILOT';
             state = 'menu';
             submitScore(enteredName); // async — fire and forget
             e.preventDefault();
-        } else if (mobileInputFocused) {
-            // Mobile: let the input receive characters natively; oninput syncs nameEntryText.
+        } else if (nameInputMode) {
+            // Mobile: the hidden input's oninput owns nameEntryText.
             // Do NOT call preventDefault here — that's what was reversing the input.
         } else {
             if (e.key === 'Backspace') {
@@ -106,133 +106,95 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
-canvas.addEventListener('touchstart', e => {
-    e.preventDefault();
-    ensureAudio();
-    initGyro();
+function ensureFullscreen() {
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
     }
-    const t = e.touches[0];
-    touch = { active: true, startX: t.clientX, startY: t.clientY,
-              startTime: Date.now(), curX: t.clientX, curY: t.clientY };
-    if (state === 'playing' && bombs > 0 && isBombButtonHit(t.clientX, t.clientY)) {
-        detonateBomb();
-        touch.active = false;
+}
+
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    ensureAudio();
+    ensureFullscreen();
+    for (const t of e.changedTouches) {
+        if (state === 'playing' && bombs > 0 && isBombButtonHit(t.clientX, t.clientY)) {
+            detonateBomb();
+            continue;
+        }
+        if (state === 'menu') {
+            keys['Space'] = true;
+            setTimeout(() => { keys['Space'] = false; }, 80);
+            continue;
+        }
+        if (state === 'game_over' && gameOverLockout <= 0) {
+            keys['Space'] = true;
+            setTimeout(() => { keys['Space'] = false; }, 80);
+            continue;
+        }
+        if (state !== 'playing') continue;
+        if (t.clientX < CANVAS_W / 2) {
+            if (!joystick.active) {
+                joystick = { active: true, id: t.identifier, curX: t.clientX, curY: t.clientY };
+            }
+        } else {
+            if (!touchShootActive) {
+                touchShootActive = true;
+                touchShootId = t.identifier;
+            }
+        }
     }
 }, { passive: false });
 
 canvas.addEventListener('touchmove', e => {
     e.preventDefault();
-    touch.curX = e.touches[0].clientX;
-    touch.curY = e.touches[0].clientY;
+    for (const t of e.changedTouches) {
+        if (joystick.active && t.identifier === joystick.id) {
+            joystick.curX = t.clientX;
+            joystick.curY = t.clientY;
+        }
+    }
 }, { passive: false });
 
 canvas.addEventListener('touchend', e => {
     e.preventDefault();
-    const elapsed = Date.now() - touch.startTime;
-    const moved   = Math.hypot(touch.curX - touch.startX, touch.curY - touch.startY);
-    if (elapsed < 180 && moved < 22) {
-        if (state === 'playing') {
-            touchShootPending = true;
-        } else if (state === 'menu') {
-            keys['Space'] = true;
-            setTimeout(() => { keys['Space'] = false; }, 80);
-        } else if (state === 'game_over' && gameOverLockout <= 0) {
-            keys['Space'] = true;
-            setTimeout(() => { keys['Space'] = false; }, 80);
+    for (const t of e.changedTouches) {
+        if (joystick.active && t.identifier === joystick.id) {
+            joystick = { active: false, id: null, curX: 0, curY: 0 };
+        }
+        if (touchShootActive && t.identifier === touchShootId) {
+            touchShootActive = false;
+            touchShootId = null;
         }
     }
-    touch.active = false;
 }, { passive: false });
 
-function isLeft()    { return keys['KeyA'] || keys['ArrowLeft'];  }
-function isRight()   { return keys['KeyD'] || keys['ArrowRight']; }
-function isForward() {
-    if (keys['KeyW'] || keys['ArrowUp']) return true;
-    if (gyroActive) return getDeviceTilt().tiltFB > GYRO_THRUST_ANGLE;
-    return false;
-}
-function isBack()    { return keys['KeyS'] || keys['ArrowDown']; }
-function isShoot()   { return keys['Space'] || touchShootPending; }
-function isStart()   { return keys['Space'] || keys['Enter']; }
-
-// Read current screen rotation angle (0, 90, 180, 270).
-function getScreenAngle() {
-    if (screen.orientation && typeof screen.orientation.angle === 'number') {
-        return screen.orientation.angle;
-    }
-    return typeof window.orientation === 'number' ? window.orientation : 0;
+function joystickBase() {
+    return { x: JOYSTICK_BASE_R + 20, y: CANVAS_H - JOYSTICK_BASE_R - 20 };
 }
 
-// Return { tiltLR, tiltFB } compensated for screen orientation.
-// tiltLR: negative = player's left, positive = player's right.
-// tiltFB: positive = player tilting device forward (thrust).
-function getDeviceTilt() {
-    const dGamma = gyroGamma - gyroBaseGamma;
-    const dBeta  = gyroBeta  - gyroBaseBeta;
-    switch (getScreenAngle()) {
-        case 90:          return { tiltLR:  dBeta, tiltFB:  dGamma };
-        case 270: case -90: return { tiltLR: -dBeta, tiltFB: -dGamma };
-        case 180:         return { tiltLR: -dGamma, tiltFB:  dBeta };
-        default:          return { tiltLR:  dGamma, tiltFB: -dBeta };
-    }
+function joystickInput() {
+    if (!joystick.active) return { dx: 0, dy: 0 };
+    const b = joystickBase();
+    const rawDx = joystick.curX - b.x;
+    const rawDy = joystick.curY - b.y;
+    const dist  = Math.hypot(rawDx, rawDy) || 1;
+    const scale = Math.min(dist, JOYSTICK_BASE_R) / JOYSTICK_BASE_R;
+    return { dx: (rawDx / dist) * scale, dy: (rawDy / dist) * scale };
 }
 
 // Returns -1..1: negative = rotate left, positive = rotate right.
-// Returns 0 when inside dead zone or gyro inactive.
-function gyroRotInput() {
-    if (!gyroActive) return 0;
-    const { tiltLR } = getDeviceTilt();
-    if (Math.abs(tiltLR) < GYRO_DEAD_ZONE) return 0;
-    const sign = tiltLR > 0 ? 1 : -1;
-    return sign * Math.min(1, (Math.abs(tiltLR) - GYRO_DEAD_ZONE) / (GYRO_MAX_TILT - GYRO_DEAD_ZONE));
+function rotInput() {
+    if (!joystick.active) return 0;
+    const { dx } = joystickInput();
+    return Math.abs(dx) < 0.15 ? 0 : dx;
 }
 
-function calibrateGyro() {
-    gyroBaseBeta  = gyroBeta;
-    gyroBaseGamma = gyroGamma;
-}
-
-function initGyro() {
-    if (gyroInitialized) return;
-    gyroInitialized = true;
-
-    function startListening() {
-        window.addEventListener('deviceorientation', e => {
-            if (e.gamma === null || e.beta === null) return;
-            gyroBeta  = e.beta;
-            gyroGamma = e.gamma;
-            if (!gyroActive) {
-                gyroActive = true;
-                calibrateGyro();
-                if (state === 'playing') {
-                    notification = { text: 'TILT TO STEER  TAP TO SHOOT', color: '#00eeff', timer: 3 };
-                }
-            }
-        });
-
-        // Re-calibrate after the screen settles into the new orientation
-        // so the hold angle at the moment of rotation becomes the new neutral.
-        const onOrientationChange = () => {
-            setTimeout(calibrateGyro, 250);
-        };
-        if (screen.orientation) {
-            screen.orientation.addEventListener('change', onOrientationChange);
-        }
-        window.addEventListener('orientationchange', onOrientationChange);
-    }
-
-    if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+ requires explicit permission from a user gesture
-        DeviceOrientationEvent.requestPermission()
-            .then(r => { if (r === 'granted') startListening(); })
-            .catch(() => {});
-    } else if (typeof DeviceOrientationEvent !== 'undefined') {
-        startListening();
-    }
-}
+function isLeft()    { return keys['KeyA'] || keys['ArrowLeft']  || (joystick.active && joystickInput().dx < -JOY_THRESH); }
+function isRight()   { return keys['KeyD'] || keys['ArrowRight'] || (joystick.active && joystickInput().dx >  JOY_THRESH); }
+function isForward() { return keys['KeyW'] || keys['ArrowUp']    || (joystick.active && joystickInput().dy < -JOY_THRESH); }
+function isBack()    { return keys['KeyS'] || keys['ArrowDown']  || (joystick.active && joystickInput().dy >  JOY_THRESH); }
+function isShoot()   { return keys['Space'] || touchShootActive; }
+function isStart()   { return keys['Space'] || keys['Enter']; }
 
 // ── Audio ───────────────────────────────────────────────────────────────────
 
@@ -591,13 +553,17 @@ let gameOverLockout;
 let particleExplosions;
 
 // Weapon upgrade state
-let weaponMode;         // 'normal' | 'rapid' | 'spread' | 'laser'
+let weaponMode;         // 'normal' | 'rapid' | 'laser'
 let weaponTimer;        // remaining seconds for current upgrade
+let weaponMaxDuration;  // duration weaponTimer counted down from (15 or 30 stacked) — for HUD bar fill
+let spreadActive;       // bool — spread can stack independently on top of rapid/laser
+let spreadTimer;        // remaining seconds for spread
+let spreadMaxDuration;  // duration spreadTimer counted down from (15 or 30 stacked) — for HUD bar fill
 let bombs;              // stored bomb count
 let laserCharge;        // 0.0 – 1.0
 let laserOverheat;      // seconds of overheat lockout
 let laserDamageTimer;   // rate-limits laser hits
-let laserBeam;          // {sx,sy,ex,ey} set each frame while laser fires
+let laserBeams;         // [{sx,sy,ex,ey,target}] set each frame while laser fires — multiple when spread is stacked
 let screenFlash;        // 0-1, used for bomb visual flash
 let notification;       // {text, color, timer} for pickup announcements
 
@@ -614,16 +580,10 @@ let assistFireTimer;
 let bgCanvas = null;
 
 // Touch / mobile input state
-let touch = { active: false, startX: 0, startY: 0, startTime: 0, curX: 0, curY: 0 };
-let touchShootPending = false;
-
-// Gyroscope state
-let gyroActive       = false;  // orientation API is running and returning data
-let gyroInitialized  = false;  // initGyro() already called
-let gyroBeta         = 0;      // current device beta (front-back tilt)
-let gyroGamma        = 0;      // current device gamma (left-right tilt)
-let gyroBaseBeta     = 0;      // calibration baseline beta
-let gyroBaseGamma    = 0;      // calibration baseline gamma
+let joystick = { active: false, id: null, curX: 0, curY: 0 };
+let touchShootActive = false;
+let touchShootId     = null;
+let nameInputMode    = false;
 
 // ── Stars ────────────────────────────────────────────────────────────────────
 
@@ -1103,12 +1063,16 @@ function spawnParticles(x, y, count, color) {
 // ── Level / Game Start ───────────────────────────────────────────────────────
 
 function resetWeapon() {
-    weaponMode      = 'normal';
-    weaponTimer     = 0;
-    laserCharge     = 1.0;
-    laserOverheat   = 0;
-    laserDamageTimer = 0;
-    laserBeam       = null;
+    weaponMode        = 'normal';
+    weaponTimer       = 0;
+    weaponMaxDuration = WEAPON_DURATION;
+    spreadActive      = false;
+    spreadTimer       = 0;
+    spreadMaxDuration = WEAPON_DURATION;
+    laserCharge       = 1.0;
+    laserOverheat     = 0;
+    laserDamageTimer  = 0;
+    laserBeams        = [];
 }
 
 function startLevel(n) {
@@ -1153,7 +1117,6 @@ function startGame() {
     assistSource    = null;
     assistTimer     = 0;
     assistFireTimer = 0;
-    calibrateGyro(); // snapshot current tilt as the neutral position
     resetWeapon();
     startLevel(1);
     state  = 'playing';
@@ -1209,11 +1172,11 @@ function updatePlaying(dt) {
 }
 
 function updateShip(dt) {
-    // Rotation — keyboard is binary full-speed; gyro is proportional -1..1
+    // Rotation — keyboard is binary full-speed; joystick is proportional -1..1
     if (isLeft())             ship.rotation -= ROTATION_SPEED * dt;
     else if (isRight())       ship.rotation += ROTATION_SPEED * dt;
     else {
-        const rot = gyroRotInput();
+        const rot = rotInput();
         if (rot !== 0) ship.rotation += rot * ROTATION_SPEED * dt;
     }
 
@@ -1269,20 +1232,18 @@ function updateShip(dt) {
         if (isShoot() && ship.shootCooldown <= 0) {
             const nx = ship.x + Math.sin(ship.rotation) * ship.radius;
             const ny = ship.y - Math.cos(ship.rotation) * ship.radius;
-            if (weaponMode === 'spread') {
+            if (spreadActive) {
                 if (bullets.length + 3 <= 15) {
                     [-0.32, 0, 0.32].forEach(offset => {
                         bullets.push(createBullet(nx, ny, ship.rotation + offset));
                     });
-                    ship.shootCooldown = SHOOT_COOLDOWN + 0.05;
-                    touchShootPending = false;
+                    ship.shootCooldown = cooldown + 0.05;
                     playLaser();
                 }
             } else {
                 if (bullets.length < 12) {
                     bullets.push(createBullet(nx, ny, ship.rotation));
                     ship.shootCooldown = cooldown;
-                    touchShootPending = false;
                     playLaser();
                 }
             }
@@ -1494,14 +1455,25 @@ function updateAssist(dt) {
 }
 
 function updateWeaponState(dt) {
-    laserBeam = null;
+    laserBeams = [];
 
     if (weaponMode !== 'normal') {
         weaponTimer -= dt;
         if (weaponTimer <= 0) {
-            resetWeapon();
+            const wasLaser = weaponMode === 'laser';
+            weaponMode  = 'normal';
+            weaponTimer = 0;
+            if (wasLaser) { laserCharge = 1.0; laserOverheat = 0; laserDamageTimer = 0; }
             notification = { text: 'WEAPON EXPIRED', color: '#aaaaaa', timer: 2 };
-            return;
+        }
+    }
+
+    if (spreadActive) {
+        spreadTimer -= dt;
+        if (spreadTimer <= 0) {
+            spreadActive = false;
+            spreadTimer  = 0;
+            notification = { text: 'SPREAD EXPIRED', color: '#aaaaaa', timer: 2 };
         }
     }
 
@@ -1514,30 +1486,33 @@ function updateWeaponState(dt) {
                 laserCharge   = 0;
                 laserOverheat = 1.8;
             }
-            const beam = laserRaycast();
-            laserBeam = beam;
+            const offsets = spreadActive ? [-0.32, 0, 0.32] : [0];
+            laserBeams = offsets.map(o => laserRaycast(o));
 
-            // Damage first hit target at a controlled rate
+            // Damage each beam's first hit target at a controlled rate
             laserDamageTimer -= dt;
-            if (beam.target && laserDamageTimer <= 0) {
+            if (laserDamageTimer <= 0) {
                 laserDamageTimer = LASER_DAMAGE_RATE;
-                const obj = beam.target;
-                obj.active = false;
-                if (obj.size !== undefined) {
-                    // Debris
-                    score += obj.points;
-                    const children = splitDebris(obj);
-                    debris = debris.filter(d => d.active);
-                    debris.push(...children);
-                    spawnParticles(obj.x, obj.y, 4, debrisColor(obj.size));
-                    playExplosion(obj.size);
-                } else {
-                    // Enemy
-                    score += obj.points;
-                    enemies = enemies.filter(e => e.active);
-                    spawnParticles(obj.x, obj.y, 12, '#44ff44');
-                    floatingTexts.push({ x: obj.x, y: obj.y, text: `+${obj.points}`, life: 1.0, maxLife: 1.0, active: true });
-                    playEnemyExplosion();
+                for (const beam of laserBeams) {
+                    const obj = beam.target;
+                    if (!obj || !obj.active) continue;
+                    obj.active = false;
+                    if (obj.size !== undefined) {
+                        // Debris
+                        score += obj.points;
+                        const children = splitDebris(obj);
+                        debris = debris.filter(d => d.active);
+                        debris.push(...children);
+                        spawnParticles(obj.x, obj.y, 4, debrisColor(obj.size));
+                        playExplosion(obj.size);
+                    } else {
+                        // Enemy
+                        score += obj.points;
+                        enemies = enemies.filter(e => e.active);
+                        spawnParticles(obj.x, obj.y, 12, '#44ff44');
+                        floatingTexts.push({ x: obj.x, y: obj.y, text: `+${obj.points}`, life: 1.0, maxLife: 1.0, active: true });
+                        playEnemyExplosion();
+                    }
                 }
             }
             // Throttled laser sound
@@ -1546,12 +1521,12 @@ function updateWeaponState(dt) {
             laserCharge = Math.min(1, laserCharge + LASER_REGEN * dt);
         }
     }
-    touchShootPending = false; // consume tap input after each frame
 }
 
-function laserRaycast() {
-    const dx = Math.sin(ship.rotation);
-    const dy = -Math.cos(ship.rotation);
+function laserRaycast(angleOffset = 0) {
+    const angle = ship.rotation + angleOffset;
+    const dx = Math.sin(angle);
+    const dy = -Math.cos(angle);
     const ox = ship.x + dx * (ship.radius + 2);
     const oy = ship.y + dy * (ship.radius + 2);
 
@@ -1696,12 +1671,14 @@ function checkCollisions() {
                     if (_ni) {
                         _ni.value = '';
                         _ni.style.pointerEvents = 'auto';
+                        nameInputMode = true;
                         _ni.focus();
                         // oninput is the single source of truth for mobile typing.
                         // Enter/submit is handled by the window keydown listener above.
                         _ni.oninput = () => {
                             nameEntryText = _ni.value.toUpperCase().slice(0, MAX_NAME_LENGTH);
                         };
+                        _ni.onblur = () => { nameInputMode = false; };
                     }
                 } else {
                     state = 'game_over';
@@ -1767,11 +1744,21 @@ function collectPowerup(type) {
     if (type === 'bomb') {
         bombs = Math.min(MAX_BOMBS, bombs + 1);
         notification = { text: `BOMB +1  (${bombs}/${MAX_BOMBS})  press B`, color: POWERUP_COLORS.bomb, timer: 2.5 };
+    } else if (type === 'spread') {
+        const stacking = weaponMode === 'rapid' || weaponMode === 'laser';
+        spreadActive = true;
+        spreadTimer  = spreadMaxDuration = stacking ? WEAPON_DURATION_STACKED : WEAPON_DURATION;
+        if (stacking) weaponTimer = weaponMaxDuration = WEAPON_DURATION_STACKED;
+        const text = stacking ? 'SPREAD SHOT! (STACKED 30s)' : 'SPREAD SHOT!';
+        notification = { text, color: POWERUP_COLORS.spread, timer: 2.5 };
     } else {
+        const stacking = spreadActive;
         weaponMode  = type;
-        weaponTimer = WEAPON_DURATION;
-        const labels = { rapid: 'RAPID FIRE!', spread: 'SPREAD SHOT!', laser: 'LASER BEAM!' };
-        notification = { text: labels[type], color: POWERUP_COLORS[type], timer: 2.5 };
+        weaponTimer = weaponMaxDuration = stacking ? WEAPON_DURATION_STACKED : WEAPON_DURATION;
+        if (stacking) spreadTimer = spreadMaxDuration = WEAPON_DURATION_STACKED;
+        const labels = { rapid: 'RAPID FIRE!', laser: 'LASER BEAM!' };
+        const text = stacking ? `${labels[type]} (STACKED 30s)` : labels[type];
+        notification = { text, color: POWERUP_COLORS[type], timer: 2.5 };
         if (type === 'laser') { laserCharge = 1.0; laserOverheat = 0; }
     }
 }
@@ -2273,8 +2260,11 @@ function renderPowerups() {
 }
 
 function renderLaserBeam() {
-    if (!laserBeam) return;
-    const { sx, sy, ex, ey } = laserBeam;
+    for (const beam of laserBeams) renderOneLaserBeam(beam);
+}
+
+function renderOneLaserBeam(beam) {
+    const { sx, sy, ex, ey } = beam;
 
     ctx.save();
     // Outer glow
@@ -2566,13 +2556,17 @@ function renderHUD() {
         ctx.restore();
     }
 
-    // Weapon mode + timer bar (bottom-left)
+    // Weapon mode + spread + bomb count stack (bottom-left, builds upward from the edge)
+    let hudStackRows = 0;
+    const HUD_ROW_H = 34;
+
     if (weaponMode !== 'normal') {
         const color  = POWERUP_COLORS[weaponMode];
-        const label  = { rapid: 'RAPID FIRE', spread: 'SPREAD', laser: 'LASER' }[weaponMode];
+        const label  = { rapid: 'RAPID FIRE', laser: 'LASER' }[weaponMode];
         const barW   = 120;
-        const barFill = (weaponTimer / WEAPON_DURATION) * barW;
-        const bx = 16, by = CANVAS_H - 36;
+        const barFill = (weaponTimer / weaponMaxDuration) * barW;
+        const bx = 16, by = CANVAS_H - 36 - hudStackRows * HUD_ROW_H;
+        hudStackRows++;
 
         ctx.font      = 'bold 13px monospace';
         ctx.fillStyle = color;
@@ -2598,9 +2592,31 @@ function renderHUD() {
         }
     }
 
-    // Bomb count (bottom-left, below weapon or at bottom if no weapon)
+    // Spread indicator — independent of weaponMode, can stack on top of rapid/laser
+    if (spreadActive) {
+        const color   = POWERUP_COLORS.spread;
+        const barW    = 120;
+        const barFill = (spreadTimer / spreadMaxDuration) * barW;
+        const bx = 16, by = CANVAS_H - 36 - hudStackRows * HUD_ROW_H;
+        hudStackRows++;
+
+        ctx.font      = 'bold 13px monospace';
+        ctx.fillStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur  = 8;
+        ctx.textAlign = 'left';
+        ctx.fillText('SPREAD', bx, by - 6);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(bx, by, barW, 6);
+        ctx.fillStyle = color;
+        ctx.fillRect(bx, by, barFill, 6);
+    }
+
+    // Bomb count (bottom-left, above any active weapon/spread rows)
     if (bombs > 0) {
-        const by = weaponMode !== 'normal' ? CANVAS_H - 70 : CANVAS_H - 36;
+        const by = CANVAS_H - 36 - hudStackRows * HUD_ROW_H;
         ctx.font      = 'bold 13px monospace';
         ctx.fillStyle = POWERUP_COLORS.bomb;
         ctx.shadowColor = POWERUP_COLORS.bomb;
@@ -2666,6 +2682,48 @@ function renderHUD() {
         ctx.fillStyle = '#00eeff';
         ctx.fillRect(bx, by, pct * barW, 6);
     }
+
+    if ('ontouchstart' in window) renderJoystick();
+
+    ctx.restore();
+}
+
+function renderJoystick() {
+    const b = joystickBase();
+    ctx.save();
+
+    // Outer ring
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, JOYSTICK_BASE_R, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Tick marks at N/S/E/W
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth   = 1.5;
+    [0, Math.PI / 2, Math.PI, Math.PI * 1.5].forEach(angle => {
+        const x1 = b.x + Math.cos(angle) * (JOYSTICK_BASE_R - 8);
+        const y1 = b.y + Math.sin(angle) * (JOYSTICK_BASE_R - 8);
+        const x2 = b.x + Math.cos(angle) * JOYSTICK_BASE_R;
+        const y2 = b.y + Math.sin(angle) * JOYSTICK_BASE_R;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+    });
+
+    // Knob
+    let kx = b.x, ky = b.y;
+    if (joystick.active) {
+        const { dx, dy } = joystickInput();
+        kx = b.x + dx * JOYSTICK_BASE_R;
+        ky = b.y + dy * JOYSTICK_BASE_R;
+    }
+    ctx.fillStyle = joystick.active ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.22)';
+    ctx.beginPath();
+    ctx.arc(kx, ky, JOYSTICK_KNOB_R, 0, Math.PI * 2);
+    ctx.fill();
 
     ctx.restore();
 }
