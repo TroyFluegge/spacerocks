@@ -550,6 +550,8 @@ let levelCfg;
 let waveDebrisRemaining;
 let levelTransitionTimer;
 let gameOverLockout;
+let startHeld = false;  // edge-detection for isStart() so a held key/tap can't chain
+                        // a game_over→menu transition straight into menu→playing
 let particleExplosions;
 
 // Weapon upgrade state
@@ -1125,19 +1127,25 @@ function startGame() {
 // ── Update ───────────────────────────────────────────────────────────────────
 
 function update(dt) {
-    if (state === 'menu')           updateMenu(dt);
+    // Edge-detect the start key/tap across all states so a key held through a
+    // game_over→menu transition can't also immediately trigger menu→playing.
+    const startNow = isStart();
+    const startJustPressed = startNow && !startHeld;
+    startHeld = startNow;
+
+    if (state === 'menu')           updateMenu(startJustPressed);
     else if (state === 'playing')   updatePlaying(dt);
-    else if (state === 'game_over') updateGameOver(dt);
+    else if (state === 'game_over') updateGameOver(dt, startJustPressed);
     // name_entry state is driven entirely by keydown events
 }
 
-function updateMenu() {
-    if (isStart()) startGame();
+function updateMenu(startJustPressed) {
+    if (startJustPressed) startGame();
 }
 
-function updateGameOver(dt) {
+function updateGameOver(dt, startJustPressed) {
     gameOverLockout -= dt;
-    if (gameOverLockout <= 0 && isStart()) {
+    if (gameOverLockout <= 0 && startJustPressed) {
         fetchLeaderboard(); // pull fresh global scores when returning to menu
         state = 'menu';
     }
@@ -1676,7 +1684,13 @@ function checkCollisions() {
                         // oninput is the single source of truth for mobile typing.
                         // Enter/submit is handled by the window keydown listener above.
                         _ni.oninput = () => {
+                            // Some mobile IMEs reset the caret to 0 after a programmatic
+                            // .value read/transform, which makes the next keystroke insert
+                            // at the front instead of the end ("typing backwards"). Force
+                            // the caret back to the end every time to guard against that.
                             nameEntryText = _ni.value.toUpperCase().slice(0, MAX_NAME_LENGTH);
+                            _ni.value = nameEntryText;
+                            _ni.setSelectionRange(nameEntryText.length, nameEntryText.length);
                         };
                         _ni.onblur = () => { nameInputMode = false; };
                     }
