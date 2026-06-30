@@ -112,6 +112,34 @@ function ensureFullscreen() {
     }
 }
 
+// iOS Safari has no Fullscreen API for ordinary page content (only <video>
+// gets one), so requestFullscreen() above is a permanent no-op there. The
+// only real fullscreen path on iOS is launching from a home-screen icon —
+// nudge the player toward that instead of leaving them stuck in the browser.
+const IOS_INSTALL_DISMISS_KEY = 'spaceRocksIosInstallDismissed';
+
+function isIosBrowserTab() {
+    const ua = navigator.userAgent;
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+    return isIOS && !isStandalone;
+}
+
+function updateIosInstallBanner() {
+    const banner = document.getElementById('iosInstallBanner');
+    if (!banner) return;
+    const dismissed = localStorage.getItem(IOS_INSTALL_DISMISS_KEY) === '1';
+    banner.style.display = (state === 'menu' && isIosBrowserTab() && !dismissed) ? 'flex' : 'none';
+}
+
+const _iosInstallDismissBtn = document.getElementById('iosInstallDismiss');
+if (_iosInstallDismissBtn) {
+    _iosInstallDismissBtn.addEventListener('click', () => {
+        try { localStorage.setItem(IOS_INSTALL_DISMISS_KEY, '1'); } catch (_) {}
+        updateIosInstallBanner();
+    });
+}
+
 canvas.addEventListener('touchstart', e => {
     e.preventDefault();
     ensureAudio();
@@ -129,6 +157,15 @@ canvas.addEventListener('touchstart', e => {
         if (state === 'game_over' && gameOverLockout <= 0) {
             keys['Space'] = true;
             setTimeout(() => { keys['Space'] = false; }, 80);
+            continue;
+        }
+        if (state === 'name_entry') {
+            // iOS Safari only allows .focus() to open the soft keyboard when
+            // called synchronously inside a real user-gesture handler — the
+            // .focus() fired at the moment of death (inside collision code)
+            // doesn't count, so re-focus here on every tap as a fallback.
+            const _ni = document.getElementById('nameInput');
+            if (_ni) _ni.focus();
             continue;
         }
         if (state !== 'playing') continue;
@@ -1120,6 +1157,8 @@ function startGame() {
 // ── Update ───────────────────────────────────────────────────────────────────
 
 function update(dt) {
+    updateIosInstallBanner();
+
     // Edge-detect the start key/tap across all states so a key held through a
     // game_over→menu transition can't also immediately trigger menu→playing.
     const startNow = isStart();
