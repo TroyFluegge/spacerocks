@@ -1681,13 +1681,28 @@ function checkCollisions() {
                         _ni.style.pointerEvents = 'auto';
                         nameInputMode = true;
                         _ni.focus();
-                        // oninput is the single source of truth for mobile typing.
-                        // Enter/submit is handled by the window keydown listener above.
+                        // beforeinput fires before the browser touches the field's value,
+                        // so for plain keystrokes (by far the common case) we build
+                        // nameEntryText ourselves from e.data and ignore wherever the
+                        // native caret thinks it is entirely — this is what fixes mobile
+                        // IMEs that silently reset the caret mid-entry (seen as reversed
+                        // text, or just the first two letters swapped).
+                        _ni.addEventListener('beforeinput', (e) => {
+                            if (e.inputType === 'insertText' && e.data) {
+                                e.preventDefault();
+                                nameEntryText = (nameEntryText + e.data).toUpperCase().slice(0, MAX_NAME_LENGTH);
+                            } else if (e.inputType === 'deleteContentBackward') {
+                                e.preventDefault();
+                                nameEntryText = nameEntryText.slice(0, -1);
+                            } else {
+                                return; // composition/paste/etc. — let oninput below sync it
+                            }
+                            _ni.value = nameEntryText;
+                            _ni.setSelectionRange(nameEntryText.length, nameEntryText.length);
+                        });
+                        // Fallback for input types beforeinput doesn't handle above
+                        // (composition, paste) — re-pins the caret the old way.
                         _ni.oninput = () => {
-                            // Some mobile IMEs reset the caret to 0 after a programmatic
-                            // .value read/transform, which makes the next keystroke insert
-                            // at the front instead of the end ("typing backwards"). Force
-                            // the caret back to the end every time to guard against that.
                             nameEntryText = _ni.value.toUpperCase().slice(0, MAX_NAME_LENGTH);
                             _ni.value = nameEntryText;
                             _ni.setSelectionRange(nameEntryText.length, nameEntryText.length);
